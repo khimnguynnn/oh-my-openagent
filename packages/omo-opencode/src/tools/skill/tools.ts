@@ -139,9 +139,18 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
     args: {
       name: tool.schema
         .string()
+        .optional()
         .describe(
           "The skill or command name (e.g., 'review-work' or 'publish'). Use without leading slash for commands.",
         ),
+      id: tool.schema
+        .string()
+        .optional()
+        .describe("Alternative identifier for the skill (used by OpenCode v2)."),
+      skill: tool.schema
+        .string()
+        .optional()
+        .describe("Alternative alias for the skill name."),
       user_message: tool.schema
         .string()
         .optional()
@@ -153,7 +162,15 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
       const skills = await getBaseSkills(ctx)
       const commands = getCommands()
 
-      const requestedName = args.name.replace(/^\//, "")
+      const rawName = args.name ?? args.id ?? (args as any).skill
+      if (!rawName || typeof rawName !== "string") {
+        const available = [...skills.map((skill) => skill.name), ...commands.map((command) => `/${command.name}`)].join(
+          ", ",
+        )
+        throw new Error(`Missing skill name or id. Available: ${available || "none"}`)
+      }
+
+      const requestedName = rawName.replace(/^\//, "")
       let matchedSkill = matchSkillByName(skills, requestedName)
 
       if (!matchedSkill && options.nativeSkills) {
@@ -222,13 +239,13 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
       const partialMatches = findPartialMatches(skills, commands, requestedName)
 
       if (partialMatches.length > 0) {
-        throw new Error(`Skill or command "${args.name}" not found. Did you mean: ${partialMatches.join(", ")}?`)
+        throw new Error(`Skill or command "${rawName}" not found. Did you mean: ${partialMatches.join(", ")}?`)
       }
 
       const available = [...skills.map((skill) => skill.name), ...commands.map((command) => `/${command.name}`)].join(
         ", ",
       )
-      throw new Error(`Skill or command "${args.name}" not found. Available: ${available || "none"}`)
+      throw new Error(`Skill or command "${rawName}" not found. Available: ${available || "none"}`)
     },
   })
 }

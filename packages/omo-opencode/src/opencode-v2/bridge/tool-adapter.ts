@@ -1,5 +1,6 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import type { ToolDefinition } from "@opencode-ai/plugin"
+import { z } from "zod"
 import { log } from "../../shared/logger"
 
 export type V1ToolMap = Record<string, ToolDefinition>
@@ -17,13 +18,18 @@ export interface V1ToolHooks {
 
 /**
  * Normalizes input schema for OpenCode V2.
- * Supports StandardSchemaV1 (Zod), JSON schema, or defaults to an empty object schema.
+ * Supports StandardSchemaV1 (Zod), JSON schema, raw Zod field mappings, or defaults to an empty object schema.
  */
 function normalizeInputSchema(rawSchema: unknown): any {
   if (rawSchema && typeof rawSchema === "object") {
-    // If it's a StandardSchemaV1 or Effect Schema or JSON schema with properties
+    // If it's already a StandardSchemaV1 or Effect Schema or JSON schema with properties
     if ("~standard" in rawSchema || "type" in rawSchema || "_def" in rawSchema) {
       return rawSchema
+    }
+    // If it's a map of field schemas (e.g. { name: z.string(), ... } from OMO V1 tools)
+    const values = Object.values(rawSchema)
+    if (values.length > 0 && values.every((v) => v && typeof v === "object" && ("_def" in v || "~standard" in v))) {
+      return z.object(rawSchema as Record<string, z.ZodTypeAny>)
     }
   }
   return {
