@@ -10,12 +10,12 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   registeredTools: Map<string, any>
   registeredToolHooks: Map<string, any>
   registeredSessionHooks: Map<string, any>
-  registeredEventSubscribers: Array<any>
+  emittedEvents: Array<any>
 } {
   const registeredTools = new Map<string, any>()
   const registeredToolHooks = new Map<string, any>()
   const registeredSessionHooks = new Map<string, any>()
-  const registeredEventSubscribers: Array<any> = []
+  const emittedEvents: Array<any> = []
 
   const mockToolEditor = {
     list: () => [],
@@ -58,14 +58,15 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
       }),
       create: mock(async (body: any) => ({ id: "mock-session-123", ...body })),
       get: mock(async (id: string) => ({ id, title: "Test Session" })),
-      context: mock(async (id: string) => ({ sessionID: id, messages: [] })),
+      context: mock(async (id: string) => [{ sessionID: id, messages: [] }]),
       interrupt: mock(async () => {}),
       prompt: mock(async (id: string, text: string) => ({ id, response: `Echo: ${text}` })),
     },
     event: {
-      subscribe: mock(async (callback: any) => {
-        registeredEventSubscribers.push(callback)
-        return { dispose: mock(async () => {}) }
+      subscribe: mock((_options?: any) => {
+        return (async function* () {
+          yield { type: "session.idle", sessionID: "s-1" }
+        })()
       }),
     },
     ...overrides,
@@ -76,7 +77,7 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
     registeredTools,
     registeredToolHooks,
     registeredSessionHooks,
-    registeredEventSubscribers,
+    emittedEvents,
   }
 }
 

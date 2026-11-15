@@ -21,10 +21,9 @@ export function createV1ClientFromV2Context(v2Context: Context): any {
       },
       messages: async (args: any) => {
         const id = args?.path?.id ?? args?.id ?? args
-        // V2 session.context retrieves current messages/context
         try {
-          const ctx = await v2Context.session.context(id)
-          return { data: ctx?.messages ?? [] }
+          const msgs = await v2Context.session.context(id)
+          return { data: Array.isArray(msgs) ? msgs : (msgs as any)?.messages ?? [] }
         } catch {
           return { data: [] }
         }

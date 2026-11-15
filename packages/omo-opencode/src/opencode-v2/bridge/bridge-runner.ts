@@ -23,8 +23,8 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
   const pluginInput: PluginInput = {
     client: v1Client,
     project: { id: "opencode-v2-project" } as any,
-    directory: v2Context.location.directory,
-    worktree: v2Context.location.directory,
+    directory: String(v2Context.location.directory),
+    worktree: String(v2Context.location.directory),
     experimental_workspace: {
       register: () => {},
     },
@@ -62,16 +62,26 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
   // 6. Bind Event Subscription
   if (typeof v1Hooks.event === "function") {
     try {
-      const eventSubscription = await v2Context.event.subscribe(async (event) => {
+      const abortController = new AbortController()
+      const eventSubscription = v2Context.event.subscribe({ signal: abortController.signal })
+
+      // Consume async iterable event stream in background
+      void (async () => {
         try {
-          await v1Hooks.event(event)
+          for await (const event of eventSubscription) {
+            if (abortController.signal.aborted) break
+            await v1Hooks.event(event)
+          }
         } catch (err) {
-          log("[v2-bridge:event] event handler error:", { error: String(err) })
+          if (!abortController.signal.aborted) {
+            log("[v2-bridge:event] event stream error:", { error: String(err) })
+          }
         }
+      })()
+
+      allDisposers.push(async () => {
+        abortController.abort()
       })
-      if (eventSubscription && typeof eventSubscription.dispose === "function") {
-        allDisposers.push(() => eventSubscription.dispose())
-      }
     } catch (err) {
       log("[v2-bridge:event] failed to subscribe to V2 event stream:", { error: String(err) })
     }

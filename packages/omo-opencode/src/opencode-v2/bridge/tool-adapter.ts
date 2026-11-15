@@ -56,11 +56,15 @@ export async function bindToolsToV2(args: {
               sessionID: String(toolCtx.sessionID),
               messageID: String(toolCtx.messageID),
               agent: String(toolCtx.agent),
-              directory: v2Context.location.directory,
+              directory: String(v2Context.location.directory),
+              worktree: String(v2Context.location.directory),
+              abort: () => {},
+              metadata: () => {},
+              ask: async () => {},
               signal: toolCtx.signal,
             }
             try {
-              const result = await definition.execute(input as Record<string, unknown>, v1ToolContext)
+              const result = await definition.execute(input as Record<string, unknown>, v1ToolContext as any)
               if (typeof result === "string") {
                 return { content: result }
               }

@@ -36,12 +36,14 @@ describe("OpenCode 2 server-entry", () => {
         hook: mock(async () => ({ dispose: mock(async () => {}) })),
         create: mock(async () => ({ id: "s-1" })),
         get: mock(async () => ({ id: "s-1" })),
-        context: mock(async () => ({ sessionID: "s-1", messages: [] })),
+        context: mock(async () => [{ sessionID: "s-1", messages: [] }]),
         interrupt: mock(async () => {}),
         prompt: mock(async () => ({})),
       },
       event: {
-        subscribe: mock(async () => ({ dispose: mock(async () => {}) })),
+        subscribe: mock((_options?: any) => {
+          return (async function* () {})()
+        }),
       },
     }
 
