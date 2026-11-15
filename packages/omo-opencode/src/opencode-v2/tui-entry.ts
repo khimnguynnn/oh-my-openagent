@@ -8,7 +8,7 @@ type NoticeToast = {
       readonly show: (options: {
         readonly title: string
         readonly message: string
-        readonly variant: "warning"
+        readonly variant: "info" | "warning" | "success" | "error"
         readonly duration: number
       }) => void
     }
@@ -19,7 +19,7 @@ export function showOpenCodeV2Notice(context: NoticeToast): void {
   context.ui.toast.show({
     title: OPENCODE_V2_NOTICE_TITLE,
     message: OPENCODE_V2_NOTICE_MESSAGE,
-    variant: "warning",
+    variant: "info",
     duration: OPENCODE_V2_NOTICE_DURATION_MS,
   })
 }
@@ -27,6 +27,6 @@ export function showOpenCodeV2Notice(context: NoticeToast): void {
 export const opencodeV2Tui = Plugin.define({
   id: "oh-my-openagent:tui",
   setup: (context) => {
-    showOpenCodeV2Notice(context)
+    showOpenCodeV2Notice(context as NoticeToast)
   },
 })

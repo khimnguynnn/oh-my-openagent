@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test"
 
-import { NATIVE_EDITION_GUIDE_URL, NATIVE_EDITION_INSTALL_COMMAND } from "../cli/native-edition-hint"
 import tuiModule from "../tui"
 import { showOpenCodeV2Notice } from "./tui-entry"
 
@@ -15,7 +14,7 @@ function recordingContext(): {
 }
 
 describe("OpenCode 2 TUI notice", () => {
-  it("shows one warning toast that points to OmO Native", () => {
+  it("shows an info toast confirming Compatibility Bridge is active", () => {
     // given
     const { shown, context } = recordingContext()
 
@@ -24,9 +23,8 @@ describe("OpenCode 2 TUI notice", () => {
 
     // then
     expect(shown).toHaveLength(1)
-    expect(shown[0]?.variant).toBe("warning")
-    expect(shown[0]?.message).toContain(NATIVE_EDITION_INSTALL_COMMAND)
-    expect(shown[0]?.message).toContain(NATIVE_EDITION_GUIDE_URL)
+    expect(shown[0]?.variant).toBe("info")
+    expect(shown[0]?.message).toContain("Compatibility Bridge active")
   })
 
   it("keeps the V1 tui entry and adds a V2 setup that shows the notice on every start", async () => {
