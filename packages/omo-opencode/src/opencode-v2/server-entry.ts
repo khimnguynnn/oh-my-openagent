@@ -1,13 +1,20 @@
 import * as Plugin from "@opencode/plugin/promise/plugin"
-
+import { setupOpenCodeV2Bridge } from "./bridge/bridge-runner"
 import { log } from "../shared/logger"
-import { OPENCODE_V2_NOTICE_MESSAGE } from "./startup-notice"
 
-// OpenCode 2 entry point. It only registers the plugin so OpenCode 2 loads it; the V1 `server`
-// export next to it keeps running the full plugin on OpenCode 1.x.
+// OpenCode 2 entry point. It initializes the full OMO Compatibility Bridge layer
+// so agents, tools, sessions, and hooks are fully active on OpenCode 2.
 export const opencodeV2Server = Plugin.define({
   id: "oh-my-openagent",
-  setup: () => {
-    log("[opencode-v2] loaded without the V1 runtime", { notice: OPENCODE_V2_NOTICE_MESSAGE })
+  setup: async (context) => {
+    try {
+      const cleanup = await setupOpenCodeV2Bridge(context)
+      return cleanup
+    } catch (error) {
+      log("[opencode-v2] failed to boot OMO compatibility bridge:", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
   },
 })
