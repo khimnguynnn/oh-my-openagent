@@ -5,6 +5,7 @@ import { log } from "../../shared/logger"
 import { createV1ClientFromV2Context } from "./client-adapter"
 import { bindToolsToV2 } from "./tool-adapter"
 import { bindSessionHooksToV2 } from "./session-adapter"
+import { bindMcpToV2 } from "./mcp-adapter"
 
 export type BridgeCleanup = () => Promise<void>
 
@@ -58,6 +59,15 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
     v1Hooks,
   })
   allDisposers.push(...sessionDisposers)
+
+  // 6. Bind MCP Servers
+  if (v2Context.mcp) {
+    const mcpDisposers = await bindMcpToV2({
+      v2Context,
+      directory: String(v2Context.location.directory),
+    })
+    allDisposers.push(...mcpDisposers)
+  }
 
   // 6. Bind Event Subscription
   if (typeof v1Hooks.event === "function") {
