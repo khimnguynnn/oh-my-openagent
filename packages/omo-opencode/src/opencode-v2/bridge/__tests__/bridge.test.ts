@@ -261,7 +261,7 @@ describe("OpenCode V2 Compatibility Bridge", () => {
         options: {},
       }
       await contextHook(contextEvent)
-      expect(contextEvent.system).toContain("injected rule")
+      expect(contextEvent.system.map((s: any) => s.text)).toContain("injected rule")
       expect(contextEvent.messages).toHaveLength(2)
       expect(contextEvent.options.reasoningEffort).toBe("high")
 

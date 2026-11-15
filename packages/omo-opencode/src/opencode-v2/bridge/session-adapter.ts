@@ -47,7 +47,14 @@ export async function bindSessionHooksToV2(args: {
       try {
         const sessionID = String(promptEvent.sessionID)
         const promptRaw = promptEvent.prompt
-        const promptText = typeof promptRaw === "string" ? promptRaw : JSON.stringify(promptRaw)
+        let promptText = ""
+        if (typeof promptRaw === "string") {
+          promptText = promptRaw
+        } else if (promptRaw && typeof promptRaw === "object" && "text" in promptRaw) {
+          promptText = String((promptRaw as any).text ?? "")
+        } else {
+          promptText = String(promptRaw ?? "")
+        }
 
         const v1Input = {
           sessionID,
@@ -62,7 +69,11 @@ export async function bindSessionHooksToV2(args: {
         // If message text was transformed by keyword detector or aliases
         const modifiedText = v1Output.parts.find((p) => p.type === "text")?.text
         if (modifiedText !== undefined && modifiedText !== promptText) {
-          promptEvent.prompt = modifiedText as any
+          if (promptRaw && typeof promptRaw === "object") {
+            (promptEvent.prompt as any).text = modifiedText
+          } else {
+            promptEvent.prompt = modifiedText as any
+          }
         }
         promptEvent.metadata = v1Output.message
       } catch (err) {
@@ -90,7 +101,7 @@ export async function bindSessionHooksToV2(args: {
         model,
       }
 
-      // A. System prompt transform
+      // A. System prompt transform (V2 expects Array<SystemPart> with .text property)
       if (v1Hooks["experimental.chat.system.transform"]) {
         try {
           const currentSystemStrings: string[] = []
@@ -98,15 +109,23 @@ export async function bindSessionHooksToV2(args: {
             if (typeof part === "string") {
               currentSystemStrings.push(part)
             } else if (part && typeof part === "object" && "text" in part) {
-              currentSystemStrings.push(String((part as any).text))
+              currentSystemStrings.push(String((part as any).text ?? ""))
             }
           }
 
           const systemOutput = { system: currentSystemStrings }
           await v1Hooks["experimental.chat.system.transform"](hookInput, systemOutput)
 
-          if (systemOutput.system.length > 0) {
-            sessionCtx.system = systemOutput.system as any
+          if (systemOutput.system && systemOutput.system.length > 0) {
+            sessionCtx.system = systemOutput.system.map((entry) => {
+              if (typeof entry === "string") {
+                return { type: "text", text: entry }
+              }
+              if (entry && typeof entry === "object" && "text" in entry) {
+                return entry
+              }
+              return { type: "text", text: String(entry ?? "") }
+            }) as any
           }
         } catch (err) {
           log("[v2-bridge:session] system transform error:", { error: String(err) })
@@ -116,9 +135,62 @@ export async function bindSessionHooksToV2(args: {
       // B. Messages transform (thinking block validation, rule injection, etc.)
       if (v1Hooks["experimental.chat.messages.transform"]) {
         try {
-          const messagesOutput = { messages: [...sessionCtx.messages] }
+          // Adapt V2 messages to V1 shape for hooks that inspect parts/info
+          const v1Messages = sessionCtx.messages.map((m: any, idx: number) => {
+            if (m && typeof m === "object" && m.info && Array.isArray(m.parts)) {
+              return m
+            }
+            const parts = Array.isArray(m.content)
+              ? m.content.map((c: any) => {
+                  if (typeof c === "string") return { type: "text", text: c }
+                  return c
+                })
+              : [{ type: "text", text: String(m.content ?? "") }]
+            return {
+              info: {
+                id: m.id ?? `msg-${idx}`,
+                role: m.role ?? "user",
+                time: { created: Date.now() },
+              },
+              parts,
+            }
+          })
+
+          const messagesOutput = { messages: v1Messages }
           await v1Hooks["experimental.chat.messages.transform"](hookInput, messagesOutput)
-          sessionCtx.messages = messagesOutput.messages as any
+
+          // Map back to valid OpenCode V2 messages ensuring every content part has valid .text
+          sessionCtx.messages = messagesOutput.messages.map((m: any) => {
+            if (m && typeof m === "object" && "role" in m && Array.isArray(m.content)) {
+              return {
+                ...m,
+                content: m.content.map((c: any) => {
+                  if (typeof c === "string") return { type: "text", text: c }
+                  if (c && typeof c === "object" && !("text" in c) && c.type === "text") {
+                    return { ...c, text: "" }
+                  }
+                  return c
+                }),
+              }
+            }
+            if (m && typeof m === "object" && m.info && Array.isArray(m.parts)) {
+              return {
+                role: m.info.role ?? "user",
+                content: m.parts.map((p: any) => {
+                  if (typeof p === "string") return { type: "text", text: p }
+                  if (p && typeof p === "object") {
+                    return {
+                      type: p.type ?? "text",
+                      text: p.text !== undefined ? String(p.text) : "",
+                      ...p,
+                    }
+                  }
+                  return { type: "text", text: String(p ?? "") }
+                }),
+              }
+            }
+            return m
+          }) as any
         } catch (err) {
           log("[v2-bridge:session] messages transform error:", { error: String(err) })
         }
