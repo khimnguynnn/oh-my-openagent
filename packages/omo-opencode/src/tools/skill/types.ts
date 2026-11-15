@@ -4,7 +4,9 @@ import type { BrowserAutomationProvider, GitMasterConfig } from "../../config/sc
 import type { CommandInfo } from "../slashcommand/types"
 
 export interface SkillArgs {
-  name: string
+  name?: string
+  id?: string
+  skill?: string
   user_message?: string
 }
 

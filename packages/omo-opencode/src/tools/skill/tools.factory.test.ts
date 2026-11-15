@@ -200,4 +200,29 @@ describe("createSkillTool", () => {
     expect(skillTool.description).toContain("<name>/lazy-skill</name>")
     expect(skillTool.description).toContain("<name>/seeded-command</name>")
   })
+
+  it("executes a skill when invoked with { id: 'lazy-skill' }", async () => {
+    // given
+    const skillTool = await createSkillTool({
+      skills: [loadedSkill],
+      commands: [],
+    })
+
+    // when
+    const result = await skillTool.execute({ id: "lazy-skill" } as any, mockContext)
+
+    // then
+    expect(result).toContain("## Skill: lazy-skill")
+  })
+
+  it("throws clear error when neither name nor id is provided", async () => {
+    // given
+    const skillTool = await createSkillTool({
+      skills: [loadedSkill],
+      commands: [],
+    })
+
+    // when / then
+    expect(skillTool.execute({} as any, mockContext)).rejects.toThrow("Missing skill name or id")
+  })
 })

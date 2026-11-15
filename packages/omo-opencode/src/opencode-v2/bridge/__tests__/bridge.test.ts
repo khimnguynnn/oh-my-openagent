@@ -160,6 +160,32 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       expect(mockV1Execute).toHaveBeenCalled()
     })
 
+    it("normalizes record of Zod field schemas into a Zod object schema", async () => {
+      const { context, registeredTools } = createMockV2Context()
+      const { z } = await import("zod")
+
+      const v1Tools: any = {
+        testTool: {
+          description: "Test tool with field schemas",
+          args: {
+            fieldA: z.string().describe("Field A"),
+            fieldB: z.number().optional(),
+          },
+          execute: mock(async (args: any) => JSON.stringify(args)),
+        },
+      }
+
+      await bindToolsToV2({
+        v2Context: context,
+        v1Tools,
+        v1Hooks: {},
+      })
+
+      expect(registeredTools.has("testTool")).toBe(true)
+      const tool = registeredTools.get("testTool")
+      expect("~standard" in tool.input || "_def" in tool.input).toBe(true)
+    })
+
     it("wires tool.execute.before and tool.execute.after hooks", async () => {
       const { context, registeredToolHooks } = createMockV2Context()
 
