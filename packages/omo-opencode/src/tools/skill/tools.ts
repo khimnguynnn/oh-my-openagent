@@ -186,7 +186,7 @@ export function createSkillTool(options: SkillLoadOptions): ToolDefinition {
       })
 
       if (matchedSkill) {
-        await ctx?.ask({
+        await ctx?.ask?.({
           permission: "skill",
           patterns: [matchedSkill.name],
           always: [matchedSkill.name],
