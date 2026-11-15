@@ -1,0 +1,273 @@
+import { describe, expect, it, mock } from "bun:test"
+import type { Context } from "@opencode/plugin/promise/plugin"
+import { createV1ClientFromV2Context } from "../client-adapter"
+import { bindToolsToV2 } from "../tool-adapter"
+import { bindSessionHooksToV2 } from "../session-adapter"
+import { setupOpenCodeV2Bridge } from "../bridge-runner"
+
+function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): {
+  context: Context
+  registeredTools: Map<string, any>
+  registeredToolHooks: Map<string, any>
+  registeredSessionHooks: Map<string, any>
+  emittedEvents: Array<any>
+} {
+  const registeredTools = new Map<string, any>()
+  const registeredToolHooks = new Map<string, any>()
+  const registeredSessionHooks = new Map<string, any>()
+  const emittedEvents: Array<any> = []
+
+  const mockToolEditor = {
+    list: () => [],
+    get: (id: string) => registeredTools.get(id),
+    namespace: () => {},
+    add: (tool: any) => {
+      registeredTools.set(tool.name, tool)
+    },
+    update: () => {},
+    remove: (id: string) => {
+      registeredTools.delete(id)
+    },
+  }
+
+  const mockContext: any = {
+    location: { directory: process.cwd() },
+    app: { url: new URL("http://localhost:4096") },
+    options: {},
+    agent: {
+      list: mock(async () => [
+        { id: "sisyphus", name: "sisyphus" },
+        { id: "hephaestus", name: "hephaestus" },
+      ]),
+      get: mock(async () => undefined),
+    },
+    tool: {
+      transform: mock(async (callback: (editor: any) => void) => {
+        callback(mockToolEditor)
+        return { dispose: mock(async () => {}) }
+      }),
+      hook: mock(async (name: string, callback: any) => {
+        registeredToolHooks.set(name, callback)
+        return { dispose: mock(async () => {}) }
+      }),
+    },
+    session: {
+      hook: mock(async (name: string, callback: any) => {
+        registeredSessionHooks.set(name, callback)
+        return { dispose: mock(async () => {}) }
+      }),
+      create: mock(async (body: any) => ({ id: "mock-session-123", ...body })),
+      get: mock(async (id: string) => ({ id, title: "Test Session" })),
+      context: mock(async (id: string) => [{ sessionID: id, messages: [] }]),
+      interrupt: mock(async () => {}),
+      prompt: mock(async (id: string, text: string) => ({ id, response: `Echo: ${text}` })),
+    },
+    event: {
+      subscribe: mock((_options?: any) => {
+        return (async function* () {
+          yield { type: "session.idle", sessionID: "s-1" }
+        })()
+      }),
+    },
+    ...overrides,
+  }
+
+  return {
+    context: mockContext,
+    registeredTools,
+    registeredToolHooks,
+    registeredSessionHooks,
+    emittedEvents,
+  }
+}
+
+describe("OpenCode V2 Compatibility Bridge", () => {
+  describe("client-adapter", () => {
+    it("creates V1 client shim that delegates session and agent operations to V2 context", async () => {
+      const { context } = createMockV2Context()
+      const v1Client = createV1ClientFromV2Context(context)
+
+      const createRes = await v1Client.session.create({ title: "New Session" })
+      expect(createRes.data.id).toBe("mock-session-123")
+
+      const getRes = await v1Client.session.get({ path: { id: "s-1" } })
+      expect(getRes.data.id).toBe("s-1")
+
+      const agentsRes = await v1Client.app.agents()
+      expect(agentsRes.data).toHaveLength(2)
+      expect(agentsRes.data[0].id).toBe("sisyphus")
+    })
+  })
+
+  describe("tool-adapter", () => {
+    it("registers tools in V2 editor and adapts execution result", async () => {
+      const { context, registeredTools } = createMockV2Context()
+      const mockV1Execute = mock(async (args: any) => `hello ${args.name}`)
+
+      const v1Tools: any = {
+        greet: {
+          description: "Greets someone",
+          args: { type: "object", properties: { name: { type: "string" } } },
+          execute: mockV1Execute,
+        },
+      }
+
+      await bindToolsToV2({
+        v2Context: context,
+        v1Tools,
+        v1Hooks: {},
+      })
+
+      expect(registeredTools.has("greet")).toBe(true)
+      const registeredGreet = registeredTools.get("greet")
+      expect(registeredGreet.description).toBe("Greets someone")
+
+      const toolCtx = {
+        sessionID: "sess-1",
+        messageID: "msg-1",
+        agent: "sisyphus",
+        signal: new AbortController().signal,
+      }
+      const execResult = await registeredGreet.execute({ name: "Alice" }, toolCtx)
+      expect(execResult).toEqual({ content: "hello Alice" })
+      expect(mockV1Execute).toHaveBeenCalled()
+    })
+
+    it("wires tool.execute.before and tool.execute.after hooks", async () => {
+      const { context, registeredToolHooks } = createMockV2Context()
+
+      const v1Before = mock(async (_input: any, output: any) => {
+        output.args.injected = true
+      })
+      const v1After = mock(async (_input: any, output: any) => {
+        output.output = output.output.toUpperCase()
+        output.metadata.processed = true
+      })
+
+      await bindToolsToV2({
+        v2Context: context,
+        v1Tools: {},
+        v1Hooks: {
+          "tool.execute.before": v1Before,
+          "tool.execute.after": v1After,
+        },
+      })
+
+      // Test execute.before hook
+      const beforeHook = registeredToolHooks.get("execute.before")
+      expect(beforeHook).toBeDefined()
+      const beforeEvent: any = {
+        tool: "custom_tool",
+        sessionID: "s-1",
+        id: "call-1",
+        input: { original: 123 },
+      }
+      await beforeHook(beforeEvent)
+      expect(beforeEvent.input.injected).toBe(true)
+
+      // Test execute.after hook
+      const afterHook = registeredToolHooks.get("execute.after")
+      expect(afterHook).toBeDefined()
+      const afterEvent: any = {
+        tool: "custom_tool",
+        sessionID: "s-1",
+        id: "call-1",
+        status: "completed",
+        result: {
+          content: "sample text",
+          metadata: {},
+        },
+      }
+      await afterHook(afterEvent)
+      expect(afterEvent.result.content).toBe("SAMPLE TEXT")
+      expect(afterEvent.result.metadata.processed).toBe(true)
+    })
+  })
+
+  describe("session-adapter", () => {
+    it("wires prompt, context, model.request, and compaction hooks", async () => {
+      const { context, registeredSessionHooks } = createMockV2Context()
+
+      const v1ChatMessage = mock(async (_input: any, output: any) => {
+        output.parts[0].text = "enhanced prompt"
+      })
+      const v1SystemTransform = mock(async (_input: any, output: any) => {
+        output.system.push("injected rule")
+      })
+      const v1MessagesTransform = mock(async (_input: any, output: any) => {
+        output.messages.push({ role: "system", content: "guard" })
+      })
+      const v1ChatParams = mock(async (_input: any, output: any) => {
+        output.options = { reasoningEffort: "high" }
+      })
+      const v1ChatHeaders = mock(async (_input: any, output: any) => {
+        output.headers = { "x-custom-auth": "secret" }
+      })
+      const v1Compacting = mock(async () => {})
+
+      await bindSessionHooksToV2({
+        v2Context: context,
+        v1Hooks: {
+          "chat.message": v1ChatMessage,
+          "experimental.chat.system.transform": v1SystemTransform,
+          "experimental.chat.messages.transform": v1MessagesTransform,
+          "chat.params": v1ChatParams,
+          "chat.headers": v1ChatHeaders,
+          "experimental.session.compacting": v1Compacting,
+        },
+      })
+
+      // 1. prompt hook
+      const promptHook = registeredSessionHooks.get("prompt")
+      const promptEvent: any = { sessionID: "s-1", prompt: "original", metadata: {} }
+      await promptHook(promptEvent)
+      expect(promptEvent.prompt).toBe("enhanced prompt")
+
+      // 2. context hook
+      const contextHook = registeredSessionHooks.get("context")
+      const contextEvent: any = {
+        sessionID: "s-1",
+        agent: "sisyphus",
+        model: {},
+        system: ["base prompt"],
+        messages: [{ role: "user", content: "hi" }],
+        options: {},
+      }
+      await contextHook(contextEvent)
+      expect(contextEvent.system).toContain("injected rule")
+      expect(contextEvent.messages).toHaveLength(2)
+      expect(contextEvent.options.reasoningEffort).toBe("high")
+
+      // 3. model.request hook
+      const modelReqHook = registeredSessionHooks.get("model.request")
+      const modelReqEvent: any = { sessionID: "s-1", agent: "sisyphus", headers: {} }
+      await modelReqHook(modelReqEvent)
+      expect(modelReqEvent.headers["x-custom-auth"]).toBe("secret")
+
+      // 4. compaction hook
+      const compactionHook = registeredSessionHooks.get("compaction")
+      const compactionEvent: any = { sessionID: "s-1" }
+      await compactionHook(compactionEvent)
+      expect(v1Compacting).toHaveBeenCalled()
+    })
+  })
+
+  describe("setupOpenCodeV2Bridge", () => {
+    it("initializes OMO runtime, registers tools and hooks, and disposes cleanly", async () => {
+      const { context, registeredTools, registeredSessionHooks } = createMockV2Context()
+
+      const cleanup = await setupOpenCodeV2Bridge(context)
+
+      // Verify tools from OMO were registered
+      expect(registeredTools.size).toBeGreaterThan(0)
+      expect(registeredTools.has("session_list") || registeredTools.has("grep") || registeredTools.has("skill")).toBe(true)
+
+      // Verify session hooks were registered
+      expect(registeredSessionHooks.has("prompt")).toBe(true)
+      expect(registeredSessionHooks.has("context")).toBe(true)
+
+      // Test cleanup
+      await expect(cleanup()).resolves.toBeUndefined()
+    })
+  })
+})
