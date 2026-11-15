@@ -3,6 +3,7 @@ import type { Context } from "@opencode/plugin/promise/plugin"
 import { createV1ClientFromV2Context } from "../client-adapter"
 import { bindToolsToV2 } from "../tool-adapter"
 import { bindSessionHooksToV2 } from "../session-adapter"
+import { bindMcpToV2 } from "../mcp-adapter"
 import { setupOpenCodeV2Bridge } from "../bridge-runner"
 
 function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): {
@@ -10,11 +11,13 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   registeredTools: Map<string, any>
   registeredToolHooks: Map<string, any>
   registeredSessionHooks: Map<string, any>
+  registeredMcps: Map<string, any>
   emittedEvents: Array<any>
 } {
   const registeredTools = new Map<string, any>()
   const registeredToolHooks = new Map<string, any>()
   const registeredSessionHooks = new Map<string, any>()
+  const registeredMcps = new Map<string, any>()
   const emittedEvents: Array<any> = []
 
   const mockToolEditor = {
@@ -30,6 +33,21 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
     },
   }
 
+  const mockMcpEditor = {
+    list: () => [...registeredMcps.entries()],
+    get: (name: string) => registeredMcps.get(name),
+    set: (name: string, config: any) => {
+      registeredMcps.set(name, config)
+    },
+    update: (name: string, updater: any) => {
+      const cur = registeredMcps.get(name)
+      if (cur) updater(cur)
+    },
+    remove: (name: string) => {
+      registeredMcps.delete(name)
+    },
+  }
+
   const mockContext: any = {
     location: { directory: process.cwd() },
     app: { url: new URL("http://localhost:4096") },
@@ -40,6 +58,14 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
         { id: "hephaestus", name: "hephaestus" },
       ]),
       get: mock(async () => undefined),
+    },
+    mcp: {
+      transform: mock(async (callback: (editor: any) => void) => {
+        callback(mockMcpEditor)
+        return { dispose: mock(async () => {}) }
+      }),
+      list: mock(async () => []),
+      reload: mock(async () => {}),
     },
     tool: {
       transform: mock(async (callback: (editor: any) => void) => {
@@ -77,6 +103,7 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
     registeredTools,
     registeredToolHooks,
     registeredSessionHooks,
+    registeredMcps,
     emittedEvents,
   }
 }
@@ -252,9 +279,39 @@ describe("OpenCode V2 Compatibility Bridge", () => {
     })
   })
 
+  describe("mcp-adapter", () => {
+    it("registers built-in OMO MCP servers via v2Context.mcp.transform", async () => {
+      const { context, registeredMcps } = createMockV2Context()
+      const disposers = await bindMcpToV2({
+        v2Context: context,
+        directory: process.cwd(),
+      })
+
+      expect(disposers.length).toBeGreaterThan(0)
+      expect(registeredMcps.has("context7")).toBe(true)
+      expect(registeredMcps.has("grep_app")).toBe(true)
+      expect(registeredMcps.has("websearch")).toBe(true)
+      expect(registeredMcps.has("lsp")).toBe(true)
+
+      const context7 = registeredMcps.get("context7")
+      expect(context7.type).toBe("remote")
+      expect(context7.url).toBe("https://mcp.context7.com/mcp")
+
+      // Existing servers are not overwritten
+      registeredMcps.set("custom-server", { type: "remote", url: "https://custom.com" })
+      await bindMcpToV2({ v2Context: context, directory: process.cwd() })
+      expect(registeredMcps.get("custom-server").url).toBe("https://custom.com")
+
+      // Disposers work
+      for (const dispose of disposers) {
+        await expect(dispose()).resolves.toBeUndefined()
+      }
+    })
+  })
+
   describe("setupOpenCodeV2Bridge", () => {
     it("initializes OMO runtime, registers tools and hooks, and disposes cleanly", async () => {
-      const { context, registeredTools, registeredSessionHooks } = createMockV2Context()
+      const { context, registeredTools, registeredSessionHooks, registeredMcps } = createMockV2Context()
 
       const cleanup = await setupOpenCodeV2Bridge(context)
 
@@ -265,6 +322,10 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       // Verify session hooks were registered
       expect(registeredSessionHooks.has("prompt")).toBe(true)
       expect(registeredSessionHooks.has("context")).toBe(true)
+
+      // Verify MCP servers were registered
+      expect(registeredMcps.has("context7")).toBe(true)
+      expect(registeredMcps.has("grep_app")).toBe(true)
 
       // Test cleanup
       await expect(cleanup()).resolves.toBeUndefined()
