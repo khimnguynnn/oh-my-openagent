@@ -1,11 +1,13 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { createPluginModule } from "../../testing/create-plugin-module"
+import { loadPluginConfig } from "../../plugin-config"
 import { log } from "../../shared/logger"
 import { createV1ClientFromV2Context } from "./client-adapter"
 import { bindToolsToV2 } from "./tool-adapter"
 import { bindSessionHooksToV2 } from "./session-adapter"
 import { bindMcpToV2 } from "./mcp-adapter"
+import { bindConfigToV2 } from "./config-adapter"
 
 export type BridgeCleanup = () => Promise<void>
 
@@ -13,8 +15,9 @@ export type BridgeCleanup = () => Promise<void>
  * Boots the full OMO runtime and binds it into OpenCode V2.
  */
 export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeCleanup> {
+  const directory = String(v2Context.location.directory)
   log("[v2-bridge] initializing OMO compatibility bridge for OpenCode V2", {
-    directory: v2Context.location.directory,
+    directory,
   })
 
   // 1. Create V1-compatible client shim wrapping V2 domains
@@ -24,8 +27,8 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
   const pluginInput: PluginInput = {
     client: v1Client,
     project: { id: "opencode-v2-project" } as any,
-    directory: String(v2Context.location.directory),
-    worktree: String(v2Context.location.directory),
+    directory,
+    worktree: directory,
     experimental_workspace: {
       register: () => {},
     },
@@ -43,7 +46,26 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
 
   const allDisposers: Array<() => Promise<void>> = []
 
-  // 4. Bind Tools and Tool Hooks
+  // 4. Execute V1 Config Pipeline and bind to V2 (agent, command, provider)
+  const v1Config: Record<string, unknown> = {}
+  if (typeof v1Hooks.config === "function") {
+    try {
+      log("[v2-bridge] executing OMO V1 config pipeline for directory", { directory })
+      await v1Hooks.config(v1Config)
+      const rawPluginConfig = loadPluginConfig(directory, {})
+
+      const configDisposers = await bindConfigToV2({
+        v2Context,
+        v1Config,
+        rawPluginConfig,
+      })
+      allDisposers.push(...configDisposers)
+    } catch (err) {
+      log("[v2-bridge:config] error during config pipeline execution:", { error: String(err) })
+    }
+  }
+
+  // 5. Bind Tools and Tool Hooks
   if (v1Hooks.tool) {
     const toolDisposers = await bindToolsToV2({
       v2Context,
@@ -53,23 +75,23 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
     allDisposers.push(...toolDisposers)
   }
 
-  // 5. Bind Session Lifecycle Hooks
+  // 6. Bind Session Lifecycle Hooks
   const sessionDisposers = await bindSessionHooksToV2({
     v2Context,
     v1Hooks,
   })
   allDisposers.push(...sessionDisposers)
 
-  // 6. Bind MCP Servers
+  // 7. Bind MCP Servers
   if (v2Context.mcp) {
     const mcpDisposers = await bindMcpToV2({
       v2Context,
-      directory: String(v2Context.location.directory),
+      directory,
     })
     allDisposers.push(...mcpDisposers)
   }
 
-  // 6. Bind Event Subscription
+  // 8. Bind Event Subscription with proper V1 EventInput adaptation
   if (typeof v1Hooks.event === "function") {
     try {
       const abortController = new AbortController()
@@ -78,9 +100,19 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
       // Consume async iterable event stream in background
       void (async () => {
         try {
-          for await (const event of eventSubscription) {
+          for await (const rawEvent of eventSubscription) {
             if (abortController.signal.aborted) break
-            await v1Hooks.event(event)
+            const data = (rawEvent as any).data ?? {}
+            const v1Event = {
+              type: rawEvent.type,
+              properties: {
+                ...(typeof data === "object" ? data : {}),
+                sessionID: data?.sessionID ?? data?.id ?? (rawEvent as any).sessionID,
+                session: data?.session ?? data,
+                ...((rawEvent as any).metadata ?? {}),
+              },
+            }
+            await v1Hooks.event({ event: v1Event })
           }
         } catch (err) {
           if (!abortController.signal.aborted) {
