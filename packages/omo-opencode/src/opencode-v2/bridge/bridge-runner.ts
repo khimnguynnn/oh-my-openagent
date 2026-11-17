@@ -20,6 +20,18 @@ export type BridgeCleanup = () => Promise<void>
 const SHELL_UNAVAILABLE = undefined as unknown as PluginInput["$"]
 
 /**
+ * V2 exposes typed domains and never tells a plugin the HTTP server URL, so there is nothing to
+ * advertise here. A guessed URL is worse than none: session listing builds an SDK client from it,
+ * the host binds an arbitrary port so the connection is refused, that error is classified as
+ * "unavailable", and the reader silently degrades to OpenCode's legacy JSON storage, which V2
+ * never writes. That is why every session list came back empty. Leaving it undefined routes those
+ * reads through the V1 client shim instead. The tmux manager keeps its own
+ * `localhost:${OPENCODE_PORT ?? 4096}` fallback, and the live-server route reports itself
+ * unavailable, which is the truth.
+ */
+const SERVER_URL_UNAVAILABLE = undefined as unknown as PluginInput["serverUrl"]
+
+/**
  * Boots the full OMO runtime and binds it into OpenCode V2.
  */
 export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeCleanup> {
@@ -40,7 +52,7 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
     experimental_workspace: {
       register: () => {},
     },
-    serverUrl: new URL("http://localhost:4096"),
+    serverUrl: SERVER_URL_UNAVAILABLE,
     $: SHELL_UNAVAILABLE,
   }
 

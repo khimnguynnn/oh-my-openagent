@@ -42,7 +42,7 @@ export async function bindToolsToV2(args: {
               agent: String(toolCtx.agent),
               directory: String(v2Context.location.directory),
               worktree: String(v2Context.location.directory),
-              abort: () => {},
+              abort: toolCtx.signal,
               metadata: () => {},
               ask: async () => {},
               signal: toolCtx.signal,
