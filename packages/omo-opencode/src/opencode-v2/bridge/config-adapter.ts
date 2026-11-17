@@ -1,4 +1,5 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
+import { getAgentConfigKey, getAgentDisplayName } from "../../shared/agent-display-names"
 import { log } from "../../shared/logger"
 
 export interface V1ConfigResult {
@@ -48,40 +49,56 @@ export async function bindConfigToV2(args: {
   if (v2Context.agent && typeof v2Context.agent.transform === "function") {
     try {
       const agentRegistration = await v2Context.agent.transform(async (editor) => {
-        const existingList = editor.list()
-        const existingMap = new Map(existingList.map((a) => [a.id, a]))
-
         // Set default agent if configured
-        if (v1Config.default_agent && typeof v1Config.default_agent === "string") {
+        const rawDefault = rawPluginConfig?.default_agent ?? v1Config.default_agent
+        if (rawDefault && typeof rawDefault === "string") {
+          const canonicalDefault = getAgentConfigKey(rawDefault) || rawDefault
           try {
-            editor.default(v1Config.default_agent)
-            log("[v2-bridge:config] set default agent:", { agent: v1Config.default_agent })
+            editor.default(canonicalDefault)
+            log("[v2-bridge:config] set default agent:", { agent: canonicalDefault })
           } catch (err) {
             log("[v2-bridge:config] failed to set default agent:", { error: String(err) })
           }
         }
 
-        // Merge V1 resolved agent config with raw pluginConfig overrides
-        const agentMap: Record<string, any> = {
-          ...(v1Config.agent ?? {}),
+        // Merge V1 resolved agent config with raw pluginConfig overrides,
+        // normalizing all keys to canonical lowercase IDs (e.g. "sisyphus", "hephaestus")
+        const agentMap: Record<string, any> = {}
+
+        // 1. Ingest V1 resolved agents
+        if (v1Config.agent) {
+          for (const [key, config] of Object.entries(v1Config.agent)) {
+            const canonicalKey = getAgentConfigKey(key) || key.toLowerCase()
+            agentMap[canonicalKey] = {
+              ...agentMap[canonicalKey],
+              ...config,
+            }
+          }
         }
+
+        // 2. Ingest rawPluginConfig.agents (from .omo/omo.jsonc - global + project)
         if (rawPluginConfig?.agents && typeof rawPluginConfig.agents === "object") {
-          for (const [id, agentOverrides] of Object.entries(rawPluginConfig.agents as Record<string, any>)) {
-            if (agentOverrides && typeof agentOverrides === "object") {
-              agentMap[id] = {
-                ...agentMap[id],
-                ...agentOverrides,
-              }
+          for (const [key, config] of Object.entries(rawPluginConfig.agents as Record<string, any>)) {
+            const canonicalKey = getAgentConfigKey(key) || key.toLowerCase()
+            agentMap[canonicalKey] = {
+              ...agentMap[canonicalKey],
+              ...config,
             }
           }
         }
 
         for (const [id, agentConfig] of Object.entries(agentMap)) {
-          if (!agentConfig || !existingMap.has(id)) continue
+          if (!agentConfig) continue
 
           try {
             editor.update(id, (agent) => {
-              // 1. Model & Reasoning / Variant
+              // 1. Name
+              const displayName = agentConfig.name ?? getAgentDisplayName(id)
+              if (displayName && !agent.name) {
+                agent.name = displayName
+              }
+
+              // 2. Model & Reasoning / Variant
               if (agentConfig.model && typeof agentConfig.model === "string") {
                 const variant = agentConfig.variant ?? agentConfig.reasoning
                 agent.model = parseModelString(agentConfig.model, variant) as any
@@ -89,18 +106,19 @@ export async function bindConfigToV2(args: {
                 agent.model = agentConfig.model
               }
 
-              // 2. System prompt
-              if (agentConfig.prompt && typeof agentConfig.prompt === "string") {
-                agent.system = agentConfig.prompt
+              // 3. System prompt
+              const prompt = agentConfig.prompt ?? agentConfig.system
+              if (prompt && typeof prompt === "string") {
+                agent.system = prompt
               }
 
-              // 3. Mode (primary | subagent | all)
+              // 4. Mode (primary | subagent | all)
               if (agentConfig.mode) {
                 agent.mode = agentConfig.mode
               }
 
-              // 4. Description
-              if (agentConfig.description) {
+              // 5. Description
+              if (agentConfig.description && typeof agentConfig.description === "string") {
                 agent.description = agentConfig.description
               }
             })
@@ -110,7 +128,7 @@ export async function bindConfigToV2(args: {
               mode: agentConfig.mode,
             })
           } catch (err) {
-            log("[v2-bridge:config] failed to update agent:", { id, error: String(err) })
+            log("[v2-bridge:config] failed to update agent in V2:", { id, error: String(err) })
           }
         }
       })
