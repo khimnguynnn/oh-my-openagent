@@ -275,6 +275,54 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       expect(many.data[0].directory).toBe("/work/proj")
     })
 
+    it("maps V2 session entries into the V1 message shape readers filter on", async () => {
+      // given a host returning the real V2 context envelope: a flat entry list, not V1 messages
+      const { context } = createMockV2Context()
+      ;(context as any).session.context = mock(async () => ({
+        data: [
+          { id: "msg-switch", type: "agent-switched", agent: "build" },
+          { id: "msg-user", type: "user", text: "hello", time: { created: 10 } },
+          {
+            id: "msg-asst",
+            type: "assistant",
+            agent: "build",
+            time: { created: 20, completed: 30 },
+            content: [
+              { type: "reasoning", text: "thinking out loud" },
+              {
+                type: "tool",
+                id: "call-1",
+                name: "execute",
+                state: { input: { code: "1" }, content: [{ type: "text", text: "result text" }] },
+              },
+            ],
+          },
+        ],
+      }))
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 reader asks for the history
+      const messages = await v1Client.session.messages({ path: { id: "s-1" } })
+
+      // then only real messages survive, each carrying the info.id readers key on
+      expect(messages.data.map((m: any) => m.info.id)).toEqual(["msg-user", "msg-asst"])
+      expect(messages.data[0].info.role).toBe("user")
+      expect(messages.data[0].parts[0]).toMatchObject({ type: "text", text: "hello" })
+
+      // and assistant content becomes the V1 part types the formatter renders
+      const assistant = messages.data[1]
+      expect(assistant.info.agent).toBe("build")
+      expect(assistant.info.time).toEqual({ created: 20, updated: 30 })
+      expect(assistant.parts[0]).toMatchObject({ type: "thinking", thinking: "thinking out loud" })
+      expect(assistant.parts[1]).toMatchObject({
+        type: "tool",
+        tool: "execute",
+        callID: "call-1",
+        input: { code: "1" },
+        output: "result text",
+      })
+    })
+
     it("reports a failed session.messages instead of silently returning an empty history", async () => {
       // given a host whose context call rejects
       const { context } = createMockV2Context()
@@ -434,6 +482,33 @@ describe("OpenCode V2 Compatibility Bridge", () => {
         properties: {},
         additionalProperties: true,
       })
+    })
+
+    it("hands tools an AbortSignal as abort, matching the V1 tool context", async () => {
+      // given a V1 tool that reads the caller abort signal the way session_* tools do
+      const { context, registeredTools } = createMockV2Context()
+      const seen: Array<unknown> = []
+
+      const v1Tools: any = {
+        signalReader: {
+          description: "Reads the abort signal",
+          args: { type: "object", properties: {} },
+          execute: mock(async (_args: any, toolCtx: any) => {
+            seen.push(toolCtx.abort)
+            toolCtx.abort?.throwIfAborted()
+            return "ok"
+          }),
+        },
+      }
+
+      // when the host executes the tool with its own signal
+      await bindToolsToV2({ v2Context: context, v1Tools, v1Hooks: {} })
+      const caller = new AbortController()
+      await registeredTools.get("signalReader").execute({}, { sessionID: "s-1", signal: caller.signal })
+
+      // then abort is that AbortSignal, not an empty function, so throwIfAborted exists
+      expect(seen[0]).toBe(caller.signal)
+      expect(typeof (seen[0] as any)?.throwIfAborted).toBe("function")
     })
 
     it("wires tool.execute.before and tool.execute.after hooks", async () => {

@@ -287,4 +287,38 @@ describe("session-manager tools", () => {
 
     expect(typeof result).toBe("string")
   })
+
+  test("no server url means storage gets no global session client", () => {
+    //#given a host that exposes no HTTP server url, as OpenCode V2 does
+    const captured: Array<unknown> = []
+    const ctxWithoutServer = { directory: projectDir } as PluginInput
+
+    //#when the session tools are created
+    createSessionManagerTools(ctxWithoutServer, {
+      setStorageClient: (_client, globalClient) => {
+        captured.push(globalClient)
+      },
+    })
+
+    //#then storage is told there is no global client, so listing reads through the plugin client
+    //instead of an SDK client aimed at a url nothing is listening on
+    expect(captured).toEqual([undefined])
+  })
+
+  test("a real server url still builds a global session client", () => {
+    //#given a host that does expose its server url
+    const captured: Array<unknown> = []
+    const ctxWithServer = { directory: projectDir, serverUrl: new URL("http://127.0.0.1:4096") } as PluginInput
+
+    //#when the session tools are created
+    createSessionManagerTools(ctxWithServer, {
+      setStorageClient: (_client, globalClient) => {
+        captured.push(globalClient)
+      },
+    })
+
+    //#then the paged global listing path stays available
+    expect(captured).toHaveLength(1)
+    expect(captured[0]).toBeDefined()
+  })
 })
