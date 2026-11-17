@@ -3,6 +3,10 @@ import { createBuiltinMcps } from "../../mcp"
 import { loadMcpConfigs } from "../../features/claude-code-mcp-loader"
 import { log } from "../../shared/logger"
 
+function isPlainRecord(value: unknown): value is Record<string, string> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 export interface V2McpAdapterOptions {
   v2Context: Context
   directory: string
@@ -44,20 +48,25 @@ export async function bindMcpToV2(options: V2McpAdapterOptions): Promise<Array<(
           continue
         }
 
+        // V2 validates each server config against a strict schema: an explicit `undefined` for an
+        // optional object field is a hard SchemaError, and a throw here makes OpenCode disable the
+        // whole plugin ("disabled plugin after transform failure"). Omit absent fields entirely.
         const mcpType = (config as { type?: unknown }).type
         if (mcpType === "remote" && (config as { url?: unknown }).url) {
+          const headers = (config as { headers?: Record<string, string> }).headers
           editor.set(name, {
             type: "remote",
             url: String((config as { url: string }).url),
-            headers: (config as { headers?: Record<string, string> }).headers,
+            ...(isPlainRecord(headers) ? { headers } : {}),
             oauth: false,
           } as any)
         } else if (mcpType === "local" && Array.isArray((config as { command?: unknown }).command)) {
+          const environment = (config as { environment?: Record<string, string> }).environment
           editor.set(name, {
             type: "local",
             command: (config as { command: string[] }).command,
             cwd: (config as { cwd?: string }).cwd ?? directory,
-            environment: (config as { environment?: Record<string, string> }).environment,
+            ...(isPlainRecord(environment) ? { environment } : {}),
           } as any)
         }
       }
