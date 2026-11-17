@@ -4,6 +4,7 @@ import { createV1ClientFromV2Context } from "../client-adapter"
 import { bindToolsToV2 } from "../tool-adapter"
 import { bindSessionHooksToV2 } from "../session-adapter"
 import { bindMcpToV2 } from "../mcp-adapter"
+import { bindConfigToV2, parseModelString } from "../config-adapter"
 import { setupOpenCodeV2Bridge } from "../bridge-runner"
 
 function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): {
@@ -18,6 +19,33 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   const registeredToolHooks = new Map<string, any>()
   const registeredSessionHooks = new Map<string, any>()
   const registeredMcps = new Map<string, any>()
+  const registeredCommands = new Map<string, any>()
+  const updatedAgents = new Map<string, any>()
+  let configuredDefaultAgent: string | undefined
+
+  const mockAgentEditor = {
+    list: () => [
+      { id: "sisyphus", name: "sisyphus" },
+      { id: "hephaestus", name: "hephaestus" },
+    ],
+    get: (id: string) => ({ id, name: id }),
+    update: mock((id: string, updater: any) => {
+      const a: any = { id, name: id }
+      updater(a)
+      updatedAgents.set(id, a)
+      return a
+    }),
+    default: mock((id: string) => {
+      configuredDefaultAgent = id
+    }),
+    remove: mock((id: string) => {}),
+  }
+
+  const mockCommandEditor = {
+    add: mock((def: any) => {
+      registeredCommands.set(def.name, def)
+    }),
+  }
   const emittedEvents: Array<any> = []
 
   const mockToolEditor = {
@@ -58,6 +86,17 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
         { id: "hephaestus", name: "hephaestus" },
       ]),
       get: mock(async () => undefined),
+      transform: mock(async (callback: (editor: any) => void) => {
+        await callback(mockAgentEditor)
+        return { dispose: mock(async () => {}) }
+      }),
+    },
+    command: {
+      transform: mock(async (callback: (editor: any) => void) => {
+        await callback(mockCommandEditor)
+        return { dispose: mock(async () => {}) }
+      }),
+      list: mock(async () => []),
     },
     mcp: {
       transform: mock(async (callback: (editor: any) => void) => {
@@ -104,6 +143,10 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
     registeredToolHooks,
     registeredSessionHooks,
     registeredMcps,
+    registeredCommands,
+    updatedAgents,
+    mockAgentEditor,
+    mockCommandEditor,
     emittedEvents,
   }
 }
@@ -335,9 +378,61 @@ describe("OpenCode V2 Compatibility Bridge", () => {
     })
   })
 
+  describe("config-adapter", () => {
+    it("parseModelString extracts providerID and modelID properly", () => {
+      const parsed1 = parseModelString("kiro-proxy/claude-opus-5.5-thinking", "max")
+      expect(parsed1.providerID).toBe("kiro-proxy")
+      expect(parsed1.id).toBe("claude-opus-5.5-thinking")
+      expect(parsed1.variant).toBe("max")
+
+      const parsed2 = parseModelString("mmodiary/doitac2/deepseek-v4-pro")
+      expect(parsed2.providerID).toBe("mmodiary")
+      expect(parsed2.id).toBe("doitac2/deepseek-v4-pro")
+
+      const parsed3 = parseModelString("claude-sonnet-4-5")
+      expect(parsed3.providerID).toBe("anthropic")
+      expect(parsed3.id).toBe("claude-sonnet-4-5")
+    })
+
+    it("binds OMO agent model overrides and default agent into V2 agent domain", async () => {
+      const { context, updatedAgents, mockAgentEditor } = createMockV2Context()
+
+      const v1Config = {
+        default_agent: "sisyphus",
+        agent: {
+          sisyphus: {
+            model: "kiro-proxy/claude-opus-5.5-thinking",
+            mode: "primary",
+            prompt: "Custom Sisyphus prompt",
+          },
+        },
+      }
+
+      const disposers = await bindConfigToV2({
+        v2Context: context,
+        v1Config,
+      })
+
+      expect(mockAgentEditor.default).toHaveBeenCalledWith("sisyphus")
+      expect(mockAgentEditor.update).toHaveBeenCalled()
+
+      const updatedSisyphus = updatedAgents.get("sisyphus")
+      expect(updatedSisyphus).toBeDefined()
+      expect(updatedSisyphus.model).toEqual({
+        providerID: "kiro-proxy",
+        id: "claude-opus-5.5-thinking",
+      })
+      expect(updatedSisyphus.system).toBe("Custom Sisyphus prompt")
+
+      for (const dispose of disposers) {
+        await expect(dispose()).resolves.toBeUndefined()
+      }
+    })
+  })
+
   describe("setupOpenCodeV2Bridge", () => {
     it("initializes OMO runtime, registers tools and hooks, and disposes cleanly", async () => {
-      const { context, registeredTools, registeredSessionHooks, registeredMcps } = createMockV2Context()
+      const { context, registeredTools, registeredSessionHooks, registeredMcps, mockAgentEditor } = createMockV2Context()
 
       const cleanup = await setupOpenCodeV2Bridge(context)
 
@@ -352,6 +447,9 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       // Verify MCP servers were registered
       expect(registeredMcps.has("context7")).toBe(true)
       expect(registeredMcps.has("grep_app")).toBe(true)
+
+      // Verify agent transform updated agents
+      expect(mockAgentEditor.update).toHaveBeenCalled()
 
       // Test cleanup
       await expect(cleanup()).resolves.toBeUndefined()
