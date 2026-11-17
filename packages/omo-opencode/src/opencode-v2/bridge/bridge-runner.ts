@@ -12,6 +12,14 @@ import { bindConfigToV2 } from "./config-adapter"
 export type BridgeCleanup = () => Promise<void>
 
 /**
+ * V2 gives plugins no shell runner (`ctx.shell` carries only `hook`), so the V1 `$` helper has
+ * no implementation here. Callers already fall back to `child_process.execFile` when `$` is not
+ * callable, which a no-op function would defeat: it would be accepted as a runner and then fail
+ * with `undefined is not an object (evaluating 'command.nothrow')`.
+ */
+const SHELL_UNAVAILABLE = undefined as unknown as PluginInput["$"]
+
+/**
  * Boots the full OMO runtime and binds it into OpenCode V2.
  */
 export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeCleanup> {
@@ -33,7 +41,7 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
       register: () => {},
     },
     serverUrl: new URL("http://localhost:4096"),
-    $: (() => {}) as any,
+    $: SHELL_UNAVAILABLE,
   }
 
   // 3. Initialize OMO plugin module

@@ -1,5 +1,15 @@
 import * as fs from "node:fs/promises"
 import { join } from "node:path"
+
+/**
+ * Auto-discovered skill roots (`~/.claude/skills`, `~/.agents/skills`, `~/.config/opencode/skill`)
+ * are optional: a machine that never created them is normal, not a load failure. Only a path that
+ * exists but cannot be read is worth reporting.
+ */
+function isAbsentPathError(error: unknown): boolean {
+  if (!(error instanceof Error) || !("code" in error)) return false
+  return error.code === "ENOENT" || error.code === "ENOTDIR"
+}
 import type { DiscoveredProjectDirectory } from "../../shared/project-discovery-dirs"
 import type { LoadedSkill, SkillScope } from "./types"
 import { inferSkillNameFromFileName, loadSkillFromPath } from "./loaded-skill-from-path"
@@ -104,7 +114,7 @@ export async function loadSkillsFromDir(options: {
       }
     }
   } catch (error) {
-    reportSkillLoadError(error, discovered, options.onDiagnostic)
+    if (!isAbsentPathError(error)) reportSkillLoadError(error, discovered, options.onDiagnostic)
   }
   return [...skillMap.values()]
 }

@@ -122,8 +122,9 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
         return { dispose: mock(async () => {}) }
       }),
       create: mock(async (body: any) => ({ id: "mock-session-123", ...body })),
-      get: mock(async (id: string) => ({ id, title: "Test Session" })),
-      context: mock(async (id: string) => [{ sessionID: id, messages: [] }]),
+      get: mock(async (input: any) => ({ id: input?.sessionID, title: "Test Session" })),
+      list: mock(async (_input?: any) => ({ data: [{ id: "child-1" }, { id: "child-2" }], cursor: {} })),
+      context: mock(async (input: any) => [{ sessionID: input?.sessionID, messages: [] }]),
       interrupt: mock(async () => {}),
       prompt: mock(async (input: any) => ({ id: String(input?.sessionID), response: `Echo: ${input?.text}` })),
       wait: mock(async (_input: any) => {}),
@@ -206,6 +207,87 @@ describe("OpenCode V2 Compatibility Bridge", () => {
 
       // then the bridge blocks until the session goes idle
       expect((context as any).session.wait).toHaveBeenCalledWith({ sessionID: "s-42" })
+    })
+
+    it("passes the V2 sessionID options object that V2 validation requires", async () => {
+      // given a V1 client over a mock V2 context
+      const { context } = createMockV2Context()
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when V1 callers use the bare-id and path shapes
+      await v1Client.session.get({ path: { id: "s-get" } })
+      await v1Client.session.messages({ path: { id: "s-msgs" } })
+      await v1Client.session.abort({ path: { id: "s-abort" } })
+
+      // then V2 receives the { sessionID } object, never a bare string (which fails with
+      // "SchemaError: Expected object" and is why permissions never refreshed)
+      expect((context as any).session.get).toHaveBeenCalledWith({ sessionID: "s-get" })
+      expect((context as any).session.context).toHaveBeenCalledWith({ sessionID: "s-msgs" })
+      expect((context as any).session.interrupt).toHaveBeenCalledWith({ sessionID: "s-abort" })
+    })
+
+    it("routes children through session.list with a parentID filter", async () => {
+      // given a host that returns the real V2 list envelope { data, cursor }
+      const { context } = createMockV2Context()
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller asks for a session's children
+      const children = await v1Client.session.children({ path: { id: "parent-1" } })
+
+      // then V2 filters by parentID and the envelope is unwrapped to rows
+      expect((context as any).session.list).toHaveBeenCalledWith({ parentID: "parent-1" })
+      expect(children.data.map((s: any) => s.id)).toEqual(["child-1", "child-2"])
+    })
+
+    it("exposes session.list with the envelope unwrapped", async () => {
+      // given a host whose list endpoint answers { data, cursor }
+      const { context } = createMockV2Context()
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller lists sessions
+      const listed = await v1Client.session.list()
+
+      // then it receives rows rather than the envelope
+      expect(listed.data).toHaveLength(2)
+      expect(listed.data[0].id).toBe("child-1")
+    })
+
+    it("flattens the V2 location.directory that session directory filters read", async () => {
+      // given a host returning the real V2 record, which nests the directory under location
+      const { context } = createMockV2Context()
+      ;(context as any).session.get = mock(async (input: any) => ({
+        id: input?.sessionID,
+        projectID: "p-1",
+        location: { directory: "/work/proj" },
+      }))
+      ;(context as any).session.list = mock(async () => ({
+        data: [{ id: "s-1", location: { directory: "/work/proj" } }],
+        cursor: {},
+      }))
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller reads one session and lists sessions
+      const one = await v1Client.session.get({ path: { id: "s-1" } })
+      const many = await v1Client.session.list()
+
+      // then both carry the flat directory V1 consumers filter on
+      expect(one.data.directory).toBe("/work/proj")
+      expect(many.data[0].directory).toBe("/work/proj")
+    })
+
+    it("reports a failed session.messages instead of silently returning an empty history", async () => {
+      // given a host whose context call rejects
+      const { context } = createMockV2Context()
+      ;(context as any).session.context = mock(async () => {
+        throw new Error("SchemaError: Expected object")
+      })
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller reads the history
+      const messages = await v1Client.session.messages({ path: { id: "s-1" } })
+
+      // then it still gets an array, and the failure is surfaced through the log
+      expect(messages.data).toEqual([])
     })
   })
 
