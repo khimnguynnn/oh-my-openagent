@@ -52,6 +52,14 @@ const RAW_PROMPT_ALLOWLIST = new Map<string, string>([
     path.join(WORKSPACE_ROOT, "packages", "senpi-task", "src", "runners", "in-process", "child-handle.ts"),
     "drives a senpi CHILD AgentSession.prompt for spawned subagent turns; senpi-task cannot reach OpenCode session APIs (opencode-coupling audit) so the main-session injection invariant does not apply",
   ],
+  [
+    path.join(SOURCE_ROOT, "opencode-v2", "bridge", "client-adapter.ts"),
+    "implements the V1 OpencodeClient session.prompt/.promptAsync surface on top of OpenCode V2 domains; this IS the client the shared gate dispatches through, so it is below the gate, not a caller of it",
+  ],
+  [
+    path.join(SOURCE_ROOT, "opencode-v2", "bridge", "config-adapter.ts"),
+    "dispatches an OMO command template when the OpenCode V2 host invokes a registered command's execute callback; the host drives this from an explicit user command, not from an idle/error edge, so the duplicate-injection invariant the gate protects does not apply",
+  ],
 ])
 
 async function listSourceFiles(directory: string): Promise<string[]> {
