@@ -4,7 +4,7 @@ import { createV1ClientFromV2Context } from "../client-adapter"
 import { bindToolsToV2 } from "../tool-adapter"
 import { bindSessionHooksToV2 } from "../session-adapter"
 import { bindMcpToV2 } from "../mcp-adapter"
-import { bindConfigToV2, parseModelString } from "../config-adapter"
+import { bindConfigToV2, expandCommandTemplate, parseModelString } from "../config-adapter"
 import { setupOpenCodeV2Bridge } from "../bridge-runner"
 
 function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): {
@@ -125,7 +125,9 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
       get: mock(async (id: string) => ({ id, title: "Test Session" })),
       context: mock(async (id: string) => [{ sessionID: id, messages: [] }]),
       interrupt: mock(async () => {}),
-      prompt: mock(async (id: string, text: string) => ({ id, response: `Echo: ${text}` })),
+      prompt: mock(async (input: any) => ({ id: String(input?.sessionID), response: `Echo: ${input?.text}` })),
+      wait: mock(async (_input: any) => {}),
+      switchAgent: mock(async (_input: any) => {}),
     },
     event: {
       subscribe: mock((_options?: any) => {
@@ -166,6 +168,44 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       const agentsRes = await v1Client.app.agents()
       expect(agentsRes.data).toHaveLength(2)
       expect(agentsRes.data[0].id).toBe("sisyphus")
+    })
+
+    it("unwraps the V2 agent.list envelope instead of nesting it", async () => {
+      // given a host that returns the real V2 shape { location, data }
+      const { context } = createMockV2Context()
+      ;(context as any).agent.list = mock(async () => ({
+        location: { directory: "/tmp" },
+        data: [{ id: "sisyphus" }, { id: "atlas" }],
+      }))
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller asks for the agent list
+      const agentsRes = await v1Client.app.agents()
+
+      // then it receives a flat array, not the envelope
+      expect(Array.isArray(agentsRes.data)).toBe(true)
+      expect(agentsRes.data.map((a: any) => a.id)).toEqual(["sisyphus", "atlas"])
+    })
+
+    it("calls V2 session.prompt with a single input object and distinguishes sync from async", async () => {
+      // given a V1 client over a mock V2 context
+      const { context } = createMockV2Context()
+      const v1Client = createV1ClientFromV2Context(context)
+
+      // when a V1 caller dispatches an async prompt
+      await v1Client.session.promptAsync({ path: { id: "s-42" }, body: { parts: [{ type: "text", text: "hi" }] } })
+
+      // then V2 receives one object carrying sessionID and text, and is not awaited to completion
+      expect((context as any).session.prompt).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionID: "s-42", text: "hi" }),
+      )
+      expect((context as any).session.wait).not.toHaveBeenCalled()
+
+      // when the same caller dispatches a synchronous prompt
+      await v1Client.session.prompt({ path: { id: "s-42" }, body: { parts: [{ type: "text", text: "hi" }] } })
+
+      // then the bridge blocks until the session goes idle
+      expect((context as any).session.wait).toHaveBeenCalledWith({ sessionID: "s-42" })
     })
   })
 
@@ -427,6 +467,52 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       for (const dispose of disposers) {
         await expect(dispose()).resolves.toBeUndefined()
       }
+    })
+
+    it("expands $ARGUMENTS, $SESSION_ID and $TIMESTAMP in a command template", () => {
+      // given a V1 command template using all three placeholders
+      const template = "<cmd>$ARGUMENTS</cmd> session=$SESSION_ID at=$TIMESTAMP"
+
+      // when it is expanded for a real invocation
+      const expanded = expandCommandTemplate(template, {
+        args: "fix the bug",
+        sessionID: "ses_abc",
+        timestamp: "2026-11-17T00:00:00.000Z",
+      })
+
+      // then every placeholder is substituted and none survive
+      expect(expanded).toBe("<cmd>fix the bug</cmd> session=ses_abc at=2026-11-17T00:00:00.000Z")
+      expect(expanded).not.toContain("$")
+    })
+
+    it("dispatches the expanded template as a prompt when a command executes", async () => {
+      // given an OMO command carrying a template and a target agent
+      const { context, registeredCommands } = createMockV2Context()
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          command: {
+            "ulw-execute": {
+              description: "Execute a plan",
+              agent: "atlas",
+              template: "<user-request>$ARGUMENTS</user-request>",
+            },
+          },
+        },
+      })
+      const command = registeredCommands.get("ulw-execute")
+      expect(command).toBeDefined()
+
+      // when the host executes it
+      await command.execute({ sessionID: "ses_xyz", prompt: { text: "my-plan.md" }, delivery: "queue" })
+
+      // then the declared agent is selected and the expanded template reaches the session
+      expect((context as any).session.switchAgent).toHaveBeenCalledWith({ sessionID: "ses_xyz", agent: "atlas" })
+      expect((context as any).session.prompt).toHaveBeenCalledWith({
+        sessionID: "ses_xyz",
+        text: "<user-request>my-plan.md</user-request>",
+        delivery: "queue",
+      })
     })
   })
 
