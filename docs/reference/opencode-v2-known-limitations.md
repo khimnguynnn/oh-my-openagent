@@ -1,0 +1,79 @@
+# OpenCode V2 bridge: known limitations
+
+Behavior the V2 bridge cannot reproduce because OpenCode V2 provides no API for it, or deliberately
+does not. Each entry states what is missing, why, and what the user sees. These are not bugs to fix;
+they are differences to expect when running OMO on V2.
+
+## Session todos
+
+`session.todo` returns `[]`. V2 has no session-todo API, so there is nothing to read.
+
+V2's todo surface is the built-in `todowrite` tool, gated behind `experimental.todo`. The list is
+derived from `session.context`: find the last part with `type: "tool"`, `name: "todowrite"`,
+`state.status: "completed"`, and read `state.input.todos` as `[{ content, status }]`. Consumers that
+need the list must derive it that way rather than through a bridge method.
+
+Consequence: OMO features that read the todo list through the V1 API see an empty list. They do not
+crash, and they do not fabricate entries.
+
+## Tools shadowed by V2 built-ins
+
+`editor.add()` cannot override a V2 built-in tool, so an OMO tool sharing a built-in's id is never
+reached. The 21 built-in ids are:
+
+```
+patch, edit, glob, grep, experimental_image_generate, opencode_session_rename,
+opencode_session_move, opencode_worktree_create, opencode_worktree_list,
+opencode_worktree_remove, opencode_models, opencode_list_mcp_resources,
+opencode_read_mcp_resource, question, read, shell, skill, subagent, webfetch, websearch, write
+```
+
+The overlap with OMO is `grep`, `glob`, and `skill`. These are **accepted, not renamed**: the V2
+built-in wins and OMO's version is inert. Tell them apart by output format, since `grep` is the one
+that is easy to confuse:
+
+- OMO: `Found N match(es) in M file(s)`
+- V2 built-in: `path:line:text`
+
+`session_list`, `task`, `look_at`, and `background_output` have no built-in counterpart, so they are
+unambiguous proof of which side is answering.
+
+## Session status
+
+`session.status` returns `{}`. V2 exposes no per-session status API. Callers that want to know whether
+a session is still working must use `session.wait` or derive it from the event stream.
+
+Affected consumers: `tools/delegate-task/{unstable-agent-task,sync-session-poller}.ts`,
+`tools/call-omo-agent/completion-poller.ts`, `tools/look-at/{session-poller,look-at-session-runner}.ts`,
+`features/tui-sidebar/snapshot-builder.ts`, `features/background-agent/manager.ts`.
+
+## TUI toasts
+
+`tui.showToast` only writes to the log. `ctx.ui.toast.show` exists on the TUI context, not the server
+context, and `ctx.event` has no emit, so a server-side plugin cannot push a toast directly. A working
+toast needs a server-to-TUI route over `ctx.rpc` (`RpcDomain.register` plus `RpcRegistration.events.emit`).
+
+## Server URL
+
+`PluginInput.serverUrl` is `undefined`. V2 never tells a plugin its HTTP address and binds an arbitrary
+port, so any guessed URL is worse than none: an SDK client built from it is refused, the error reads as
+"unavailable", and session listing silently degrades to OpenCode's legacy JSON storage that V2 never
+writes. Leaving it undefined routes those reads through the V1 client shim instead. The tmux manager
+keeps its own `localhost:${OPENCODE_PORT ?? 4096}` fallback; the live-server route reports itself
+unavailable, which is the truth.
+
+## Shell runner
+
+`PluginInput.$` is `undefined`. `ctx.shell` carries only `hook`, so V2 gives a plugin no shell runner.
+Callers already fall back to `child_process.execFile` when `$` is not callable. It must be a real
+`undefined`: a no-op function is callable, so it would be accepted as a runner and then fail later.
+
+## Event publishing
+
+`ctx.event` provides only `subscribe`, so a plugin cannot emit an event. Anything that needs to publish
+must route through `ctx.rpc`.
+
+## Server password
+
+V2 reads `OPENCODE_PASSWORD`. The V1 name `OPENCODE_SERVER_PASSWORD` is no longer read, so
+`getServerBasicAuthHeader()` no longer finds a credential from the environment alone.
