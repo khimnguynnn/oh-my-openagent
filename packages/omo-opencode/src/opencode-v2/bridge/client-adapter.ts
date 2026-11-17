@@ -31,6 +31,53 @@ function unwrapList(result: any): any[] {
   return rows.map(normalizeSession)
 }
 
+function unwrapRows(result: any): any[] {
+  if (Array.isArray(result)) return result
+  if (Array.isArray(result?.data)) return result.data
+  if (Array.isArray(result?.messages)) return result.messages
+  return []
+}
+
+function toV1Parts(entry: any): any[] {
+  if (entry?.type === "user") {
+    return typeof entry.text === "string" ? [{ id: entry.id, type: "text", text: entry.text }] : []
+  }
+  const content = Array.isArray(entry?.content) ? entry.content : []
+  return content.map((part: any, index: number) => {
+    const id = part?.id ?? `${entry?.id}:${index}`
+    if (part?.type === "reasoning") return { id, type: "thinking", thinking: part.text }
+    if (part?.type === "tool") {
+      const output = (Array.isArray(part?.state?.content) ? part.state.content : [])
+        .map((chunk: any) => (typeof chunk?.text === "string" ? chunk.text : ""))
+        .filter(Boolean)
+        .join("\n")
+      return { id, type: "tool", tool: part.name, callID: part.id, input: part?.state?.input, output }
+    }
+    return { id, type: part?.type ?? "text", text: part?.text }
+  })
+}
+
+/**
+ * V2 `session.context` answers a flat list of session entries, while every V1 session reader
+ * expects `{ info, parts }` messages and drops anything without `info.id`. Unmapped entries
+ * therefore read as an empty session, which is why listing reported every session as unreadable.
+ * Only `user` and `assistant` entries are messages; `agent-switched`, `system` and `idle` are
+ * session events with no V1 counterpart.
+ */
+function toV1Messages(entries: any[]): any[] {
+  return entries
+    .filter((entry) => entry?.type === "user" || entry?.type === "assistant")
+    .map((entry) => ({
+      info: {
+        id: entry.id,
+        role: entry.type,
+        agent: entry.agent,
+        time: { created: entry?.time?.created, updated: entry?.time?.completed ?? entry?.time?.created },
+      },
+      parts: toV1Parts(entry),
+    }))
+}
+
 /**
  * `ctx.session.list` exists at runtime (it is in the live domain's own key list and answers
  * `{ data, cursor }`) but the published `SessionDomain` type omits it, so the type has to be
@@ -94,8 +141,8 @@ export function createV1ClientFromV2Context(v2Context: Context): any {
       },
       messages: async (args: any) => {
         try {
-          const msgs = await v2Context.session.context(sessionRef(args))
-          return { data: Array.isArray(msgs) ? msgs : ((msgs as any)?.messages ?? []) }
+          const context = await v2Context.session.context(sessionRef(args))
+          return { data: toV1Messages(unwrapRows(context)) }
         } catch (error) {
           log("[v2-bridge:client] session.messages failed", { error: String(error) })
           return { data: [] }
