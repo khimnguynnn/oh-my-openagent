@@ -711,8 +711,77 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       }
     })
 
-    it("expands $ARGUMENTS, $SESSION_ID and $TIMESTAMP in a command template", () => {
-      // given a V1 command template using all three placeholders
+    it("projects OMO tool permissions onto the V2 agent ruleset", async () => {
+      // given a V1 config carrying phase 4 output: global tool flags, global permission, and
+      // per-agent permission maps
+      const { context, updatedAgents } = createMockV2Context()
+
+      const v1Config = {
+        tools: { "grep_app_*": false, "task_*": false, teammate: false },
+        permission: { webfetch: "allow", external_directory: "allow", task: "deny" },
+        agent: {
+          librarian: {
+            name: "librarian",
+            permission: { "grep_app_*": "allow", task: "deny" },
+          },
+          sisyphus: {
+            name: "sisyphus",
+            permission: { task: "allow", "task_*": "allow", teammate: "allow", call_omo_agent: "deny" },
+          },
+          prometheus: {
+            name: "prometheus",
+            permission: { task: "allow", bash: "deny", interactive_bash: "deny" },
+          },
+        },
+      }
+
+      // when the bridge binds the config to V2
+      await bindConfigToV2({ v2Context: context, v1Config })
+
+      const ruleFor = (agentID: string, action: string, resource = "*") =>
+        updatedAgents
+          .get(agentID)
+          ?.permissions?.findLast((rule: any) => rule.action === action && rule.resource === resource)?.effect
+
+      // then the global deny reaches every agent
+      expect(ruleFor("librarian", "task_*")).toBe("deny")
+      expect(ruleFor("librarian", "webfetch")).toBe("allow")
+      expect(ruleFor("librarian", "external_directory")).toBe("allow")
+
+      // and the per-agent grants override it where OMO grants them
+      expect(ruleFor("librarian", "grep_app_*")).toBe("allow")
+      expect(ruleFor("sisyphus", "task")).toBe("allow")
+      expect(ruleFor("sisyphus", "subagent")).toBe("allow")
+      expect(ruleFor("sisyphus", "call_omo_agent")).toBe("deny")
+      expect(ruleFor("prometheus", "bash")).toBe("deny")
+      expect(ruleFor("prometheus", "shell")).toBe("deny")
+      expect(ruleFor("prometheus", "interactive_bash")).toBe("deny")
+    })
+
+    it("keeps the permission projection idempotent across repeated transforms", async () => {
+      // given a bound config and a captured agent transform updater
+      const { context, updatedAgents, mockAgentEditor } = createMockV2Context()
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          tools: { "grep_app_*": false },
+          agent: { sisyphus: { name: "sisyphus", permission: { "grep_app_*": "allow" } } },
+        },
+      })
+
+      const updater = (mockAgentEditor.update as any).mock.calls[0][1]
+      const agent = updatedAgents.get("sisyphus")
+      const firstSnapshot = JSON.parse(JSON.stringify(agent.permissions))
+
+      // when the host re-runs the transform over the same agent object
+      updater(agent)
+      updater(agent)
+
+      // then the ruleset is byte-identical, so nothing accumulates
+      expect(agent.permissions).toEqual(firstSnapshot)
+    })
+
+    it("expands $ARGUMENTS, $SESSION_ID and $TIMESTAMP in a command template", () => {      // given a V1 command template using all three placeholders
       const template = "<cmd>$ARGUMENTS</cmd> session=$SESSION_ID at=$TIMESTAMP"
 
       // when it is expanded for a real invocation
