@@ -35,6 +35,22 @@ export function parseModelString(modelStr: string, variant?: string): {
 }
 
 /**
+ * Expands an OMO V1 command template into the prompt text V2 delivers to the session.
+ *
+ * V1 OpenCode substituted these placeholders itself. V2 hands the plugin a bare
+ * `CommandInvocation`, so the bridge owns the substitution.
+ */
+export function expandCommandTemplate(
+  template: string,
+  context: { args: string; sessionID: string; timestamp?: string },
+): string {
+  return template
+    .replaceAll("$ARGUMENTS", context.args)
+    .replaceAll("$SESSION_ID", context.sessionID)
+    .replaceAll("$TIMESTAMP", context.timestamp ?? new Date().toISOString())
+}
+
+/**
  * Binds OMO V1 config results to OpenCode V2 domains (agent, command, provider).
  */
 export async function bindConfigToV2(args: {
@@ -48,7 +64,9 @@ export async function bindConfigToV2(args: {
   // 1. Agent Domain Transform
   if (v2Context.agent && typeof v2Context.agent.transform === "function") {
     try {
-      const agentRegistration = await v2Context.agent.transform(async (editor) => {
+      // The host invokes this callback lazily, on every agent-list recompute, and does not await
+      // it. It must stay synchronous and idempotent.
+      const agentRegistration = await v2Context.agent.transform((editor) => {
         // Set default agent if configured
         const rawDefault = rawPluginConfig?.default_agent ?? v1Config.default_agent
         if (rawDefault && typeof rawDefault === "string") {
@@ -149,7 +167,29 @@ export async function bindConfigToV2(args: {
               name,
               description: cmd.description ?? "",
               execute: async (inv) => {
-                log("[v2-bridge:command] executed command:", { name, sessionID: inv.sessionID })
+                const sessionID = String(inv.sessionID)
+                const template = typeof cmd.template === "string" ? cmd.template : ""
+                const text = expandCommandTemplate(template, {
+                  args: String(inv.prompt?.text ?? ""),
+                  sessionID,
+                })
+                if (!text.trim()) {
+                  log("[v2-bridge:command] command has no template, nothing to dispatch:", { name })
+                  return
+                }
+                if (typeof cmd.agent === "string" && cmd.agent) {
+                  try {
+                    await v2Context.session.switchAgent({ sessionID: inv.sessionID, agent: cmd.agent })
+                  } catch (err) {
+                    log("[v2-bridge:command] failed to switch agent for command:", {
+                      name,
+                      agent: cmd.agent,
+                      error: String(err),
+                    })
+                  }
+                }
+                await v2Context.session.prompt({ sessionID: inv.sessionID, text, delivery: inv.delivery })
+                log("[v2-bridge:command] dispatched command template:", { name, sessionID })
               },
             })
           } catch (err) {
