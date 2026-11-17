@@ -1,12 +1,20 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import { getAgentConfigKey, getAgentDisplayName } from "../../shared/agent-display-names"
 import { log } from "../../shared/logger"
+import {
+  createV2PermissionProjector,
+  dedupePermissionRules,
+  toolFlagsToV2PermissionRules,
+  toV2PermissionRules,
+} from "./permission-adapter"
 
 export interface V1ConfigResult {
   agent?: Record<string, any>
   default_agent?: string
   command?: Record<string, any>
   provider?: Record<string, any>
+  tools?: Record<string, boolean>
+  permission?: Record<string, unknown>
 }
 
 /**
@@ -60,6 +68,18 @@ export async function bindConfigToV2(args: {
 }): Promise<Array<() => Promise<void>>> {
   const { v2Context, v1Config, rawPluginConfig } = args
   const disposers: Array<() => Promise<void>> = []
+
+  const globalPermissionRules = dedupePermissionRules([
+    ...toolFlagsToV2PermissionRules(v1Config.tools),
+    ...toV2PermissionRules(v1Config.permission),
+  ])
+  const permissionProjector = createV2PermissionProjector({ globalRules: globalPermissionRules })
+
+  if (globalPermissionRules.length > 0) {
+    log("[v2-bridge:config] projecting global tool permissions onto the V2 ruleset:", {
+      ruleCount: globalPermissionRules.length,
+    })
+  }
 
   // 1. Agent Domain Transform
   if (v2Context.agent && typeof v2Context.agent.transform === "function") {
@@ -138,6 +158,17 @@ export async function bindConfigToV2(args: {
               // 5. Description
               if (agentConfig.description && typeof agentConfig.description === "string") {
                 agent.description = agentConfig.description
+              }
+
+              // 6. Tool permissions
+              // V2 resolves permissions from an ordered rule list on the agent, not from V1's
+              // name-to-effect map, so phase 4 is invisible to V2 without this projection.
+              const ruleCount = permissionProjector.project(id, agent, agentConfig.permission)
+              if (ruleCount > 0) {
+                log("[v2-bridge:config] projected tool permissions onto agent:", {
+                  id,
+                  ruleCount,
+                })
               }
             })
             log("[v2-bridge:config] updated agent from OMO config:", {
