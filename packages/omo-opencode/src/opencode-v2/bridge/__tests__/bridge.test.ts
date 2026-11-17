@@ -243,7 +243,8 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       expect(mockV1Execute).toHaveBeenCalled()
     })
 
-    it("normalizes record of Zod field schemas into a Zod object schema", async () => {
+    it("converts a record of Zod field schemas into plain JSON Schema", async () => {
+      // given a V1 tool whose args are a map of Zod field schemas
       const { context, registeredTools } = createMockV2Context()
       const { z } = await import("zod")
 
@@ -253,20 +254,104 @@ describe("OpenCode V2 Compatibility Bridge", () => {
           args: {
             fieldA: z.string().describe("Field A"),
             fieldB: z.number().optional(),
+            fieldC: z.enum(["one", "two"]).optional(),
           },
           execute: mock(async (args: any) => JSON.stringify(args)),
         },
       }
 
-      await bindToolsToV2({
-        v2Context: context,
-        v1Tools,
-        v1Hooks: {},
-      })
+      // when the tools are bound to V2
+      await bindToolsToV2({ v2Context: context, v1Tools, v1Hooks: {} })
 
-      expect(registeredTools.has("testTool")).toBe(true)
+      // then the registered input is JSON Schema the host never has to introspect with its own zod
       const tool = registeredTools.get("testTool")
-      expect("~standard" in tool.input || "_def" in tool.input).toBe(true)
+      expect(tool.input.type).toBe("object")
+      expect(Object.keys(tool.input.properties)).toEqual(["fieldA", "fieldB", "fieldC"])
+      expect(tool.input.required).toEqual(["fieldA"])
+      expect(tool.input.properties.fieldA.description).toBe("Field A")
+      expect(tool.input.properties.fieldC.enum).toEqual(["one", "two"])
+      expect("~standard" in tool.input).toBe(false)
+      expect("_def" in tool.input).toBe(false)
+    })
+
+    it("converts a Zod object schema and passes plain JSON Schema through untouched", async () => {
+      // given one tool with a Zod object schema and one with hand-written JSON Schema
+      const { context, registeredTools } = createMockV2Context()
+      const { z } = await import("zod")
+      const jsonSchema = { type: "object", properties: { raw: { type: "string" } } }
+
+      const v1Tools: any = {
+        zodTool: {
+          description: "Zod object",
+          args: z.object({ a: z.string() }),
+          execute: mock(async () => "ok"),
+        },
+        jsonTool: {
+          description: "JSON schema",
+          args: jsonSchema,
+          execute: mock(async () => "ok"),
+        },
+      }
+
+      // when the tools are bound to V2
+      await bindToolsToV2({ v2Context: context, v1Tools, v1Hooks: {} })
+
+      // then both arrive as JSON Schema, and the already-plain one is unchanged
+      expect(registeredTools.get("zodTool").input).toEqual({
+        type: "object",
+        properties: { a: { type: "string" } },
+        required: ["a"],
+      })
+      expect(registeredTools.get("jsonTool").input).toEqual(jsonSchema)
+    })
+
+    it("converts a field map built by the plugin's own zod copy", async () => {
+      // given a V1 tool whose args were built with `tool.schema` (the @opencode-ai/plugin zod copy)
+      const { context, registeredTools } = createMockV2Context()
+      const { tool } = await import("@opencode-ai/plugin/tool")
+
+      const v1Tools: any = {
+        pluginZodTool: {
+          description: "Args built by the plugin zod copy",
+          args: {
+            pattern: tool.schema.string().describe("Pattern"),
+            output_mode: tool.schema.enum(["content", "count"]).optional(),
+          },
+          execute: mock(async () => "ok"),
+        },
+      }
+
+      // when the tools are bound to V2
+      await bindToolsToV2({ v2Context: context, v1Tools, v1Hooks: {} })
+
+      // then the field map converts instead of collapsing to a permissive empty schema
+      expect(registeredTools.get("pluginZodTool").input).toEqual({
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "Pattern" },
+          output_mode: { type: "string", enum: ["content", "count"] },
+        },
+        required: ["pattern"],
+      })
+    })
+
+    it("falls back to a permissive object schema when args are unusable", async () => {
+      // given a tool whose args are neither Zod nor JSON Schema
+      const { context, registeredTools } = createMockV2Context()
+
+      const v1Tools: any = {
+        oddTool: { description: "No usable args", args: undefined, execute: mock(async () => "ok") },
+      }
+
+      // when the tools are bound to V2
+      await bindToolsToV2({ v2Context: context, v1Tools, v1Hooks: {} })
+
+      // then the tool still registers instead of being skipped by the host
+      expect(registeredTools.get("oddTool").input).toEqual({
+        type: "object",
+        properties: {},
+        additionalProperties: true,
+      })
     })
 
     it("wires tool.execute.before and tool.execute.after hooks", async () => {
