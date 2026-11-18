@@ -329,8 +329,7 @@ describe("V2 sidebar HUD live agent rows", () => {
 
     // then
     expect(inserted).toContain("Agents")
-    expect(inserted.some((line) => line.includes("oracle") && line.includes("gpt-5"))).toBe(true)
-    expect(inserted.some((line) => line.includes("audit the bridge"))).toBe(true)
+    expect(inserted.some((line) => line.includes("oracle"))).toBe(true)
     hud?.dispose()
   })
 
@@ -428,19 +427,21 @@ describe("V2 sidebar HUD live agent rows", () => {
     hud?.dispose()
   })
 
-  it("#given a click target #when an agent row is rendered #then the row carries the session selection", async () => {
+  it("#given two sessions of one agent #when the group row is clicked #then the group folds open", async () => {
     // given
     const { host, claims } = recordingHost()
     const { solid, props } = fakeSolid()
-    const selected: string[] = []
+    const rows: readonly AgentRow[] = [
+      { name: "oracle", status: "running", sessionID: "s-oracle" },
+      { name: "oracle", status: "idle", sessionID: "s-second" },
+    ]
     const hud = await startSidebarHud({
       directory: "/proj",
       host,
       solid,
       isEnabled: async () => true,
       readView: async () => ACTIVE_VIEW,
-      readAgents: () => contextAgents,
-      onSelectAgent: (sessionID) => selected.push(sessionID),
+      readAgents: () => rows,
       intervalMs: 60_000,
     })
 
@@ -451,7 +452,30 @@ describe("V2 sidebar HUD live agent rows", () => {
     ;(handler as () => void)()
 
     // then
-    expect(selected).toEqual(["s-oracle"])
+    expect(claims.length).toBe(2)
+    expect(claims[0]?.released).toBe(true)
+    hud?.dispose()
+  })
+
+  it("#given no click target #when the HUD renders #then no row carries a handler", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, props } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => contextAgents,
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(props.every((entry) => entry.onMouseDown === undefined)).toBe(true)
     hud?.dispose()
   })
 

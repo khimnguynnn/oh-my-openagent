@@ -190,32 +190,92 @@ describe("tui sidebar agent rows", () => {
     expect(modelColumn.endsWith("...")).toBe(true)
   })
 
-  it("#given an agent with a session and a click target #when building nodes #then the row carries a ref and a mouse handler", () => {
+  it("#given a single-session agent and a click target #when building nodes #then the group row carries no handler", () => {
     // given
     const selected: string[] = []
     const view = computeView({ ...activeSections, agents: { kind: "list", agents: [running] } })
 
     // when
     const nodes = buildViewNodes(view, theme, { onSelectAgent: (id) => selected.push(id) })
+    const row = firstTextWithRef(nodes, "group:oracle")
+
+    // then
+    expect(row).toBeDefined()
+    expect(row?.props.onMouseDown).toBeUndefined()
+  })
+
+  it("#given an expanded group #when building nodes #then its session row carries a ref and navigates on click", () => {
+    // given
+    const selected: string[] = []
+    const rows: AgentRow[] = [
+      { name: "oracle", status: "running", sessionID: "s-1", title: "first" },
+      { name: "oracle", status: "idle", sessionID: "s-2", title: "second" },
+    ]
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: rows } })
+
+    // when
+    const nodes = buildViewNodes(view, theme, {
+      onSelectAgent: (id) => selected.push(id),
+      expandedAgents: ["oracle"],
+    })
     const row = firstTextWithRef(nodes, "agent:s-1")
 
     // then
     expect(row).toBeDefined()
+    expect(row?.text).toContain("s-1")
     expect(typeof row?.props.onMouseDown).toBe("function")
     ;(row?.props.onMouseDown as () => void)()
     expect(selected).toEqual(["s-1"])
   })
 
-  it("#given no click target #when building nodes #then the row has no handler instead of a dead click", () => {
+  it("#given a collapsed group #when building nodes #then its session rows are hidden", () => {
     // given
-    const view = computeView({ ...activeSections, agents: { kind: "list", agents: [running] } })
+    const rows: AgentRow[] = [
+      { name: "oracle", status: "running", sessionID: "s-1" },
+      { name: "oracle", status: "idle", sessionID: "s-2" },
+    ]
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: rows } })
+
+    // when
+    const nodes = buildViewNodes(view, theme, { onSelectAgent: () => undefined })
+
+    // then
+    expect(firstTextWithRef(nodes, "agent:s-1")).toBeUndefined()
+    expect(firstTextWithRef(nodes, "group:oracle")).toBeDefined()
+  })
+
+  it("#given multiple sessions of one agent #when building nodes #then one row shows the count", () => {
+    // given
+    const rows: AgentRow[] = [
+      { name: "explore", status: "running", sessionID: "s-1" },
+      { name: "explore", status: "running", sessionID: "s-2" },
+      { name: "explore", status: "idle", sessionID: "s-3" },
+      { name: "explore", status: "idle", sessionID: "s-4" },
+    ]
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: rows } })
 
     // when
     const nodes = buildViewNodes(view, theme)
-    const row = firstTextWithRef(nodes, "agent:s-1")
+    const row = firstTextWithRef(nodes, "group:explore")
 
     // then
-    expect(row?.props.onMouseDown).toBeUndefined()
+    expect(row?.text).toContain("explore ·4")
+  })
+
+  it("#given a measured width #when building nodes #then the row fits that width", () => {
+    // given
+    const rows: AgentRow[] = [
+      { name: "a-very-long-agent-name-that-would-wrap", status: "running", sessionID: "s-1" },
+    ]
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: rows } })
+
+    // when
+    const narrow = firstTextWithRef(buildViewNodes(view, theme, { width: 24 }), "group:a-very-long-agent-name-that-would-wrap")
+    const wide = firstTextWithRef(buildViewNodes(view, theme, { width: 80 }), "group:a-very-long-agent-name-that-would-wrap")
+
+    // then
+    expect(narrow?.text?.length).toBeLessThan(wide?.text?.length ?? 0)
+    expect(narrow?.text).toContain("...")
   })
 
   it("#given an agent naming a theme token #when building nodes #then that token colours the row", () => {
