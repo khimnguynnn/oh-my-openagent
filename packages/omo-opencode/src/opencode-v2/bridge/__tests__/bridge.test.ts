@@ -14,6 +14,7 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   registeredToolHooks: Map<string, any>
   registeredSessionHooks: Map<string, any>
   registeredMcps: Map<string, any>
+  registeredSkills: Map<string, any>
   emittedEvents: Array<any>
 } {
   const registeredTools = new Map<string, any>()
@@ -21,6 +22,7 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   const registeredSessionHooks = new Map<string, any>()
   const registeredMcps = new Map<string, any>()
   const registeredCommands = new Map<string, any>()
+  const registeredSkills = new Map<string, any>()
   const updatedAgents = new Map<string, any>()
   let configuredDefaultAgent: string | undefined
 
@@ -45,6 +47,18 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
   const mockCommandEditor = {
     add: mock((def: any) => {
       registeredCommands.set(def.name, def)
+    }),
+  }
+
+  const mockSkillEditor = {
+    list: () => [...registeredSkills.values()],
+    get: (id: string) => registeredSkills.get(id),
+    add: mock((skill: any) => {
+      registeredSkills.set(skill.id, skill)
+    }),
+    update: mock(() => {}),
+    remove: mock((id: string) => {
+      registeredSkills.delete(id)
     }),
   }
   const emittedEvents: Array<any> = []
@@ -107,6 +121,14 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
       list: mock(async () => []),
       reload: mock(async () => {}),
     },
+    skill: {
+      transform: mock(async (callback: (editor: any) => void) => {
+        callback(mockSkillEditor)
+        return { dispose: mock(async () => {}) }
+      }),
+      list: mock(async () => []),
+      reload: mock(async () => {}),
+    },
     tool: {
       transform: mock(async (callback: (editor: any) => void) => {
         callback(mockToolEditor)
@@ -148,6 +170,7 @@ function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): 
     registeredSessionHooks,
     registeredMcps,
     registeredCommands,
+    registeredSkills,
     updatedAgents,
     mockAgentEditor,
     mockCommandEditor,
@@ -1062,6 +1085,23 @@ describe("OpenCode V2 Compatibility Bridge", () => {
 
       // Test cleanup
       await expect(cleanup()).resolves.toBeUndefined()
+    })
+
+    it("registers the runtime security skills on the V2 skill domain", async () => {
+      // given a bridge booted against a mock V2 context whose config has no disabled_skills
+      const { context, registeredSkills } = createMockV2Context()
+
+      // when the runner wires everything up
+      const cleanup = await setupOpenCodeV2Bridge(context)
+
+      // then the code-only security skills reach the host's skill domain
+      expect(registeredSkills.has("security-research")).toBe(true)
+      expect(registeredSkills.has("security-review")).toBe(true)
+      expect(String((registeredSkills.get("security-research") as any).path)).toBe(
+        "skill://security-research/SKILL.md",
+      )
+
+      await cleanup()
     })
   })
 })

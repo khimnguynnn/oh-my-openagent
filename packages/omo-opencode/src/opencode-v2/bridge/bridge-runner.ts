@@ -8,6 +8,7 @@ import { bindToolsToV2 } from "./tool-adapter"
 import { bindSessionHooksToV2 } from "./session-adapter"
 import { bindMcpToV2 } from "./mcp-adapter"
 import { bindConfigToV2 } from "./config-adapter"
+import { bindRuntimeSkillsToV2 } from "./skill-adapter"
 import { readV2ProviderCatalog, summarizeV1ProviderConfig, toV1ProviderConfig, type V2ModelInfoLike } from "./provider-adapter"
 
 export type BridgeCleanup = () => Promise<void>
@@ -69,6 +70,7 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
 
   // 4. Execute V1 Config Pipeline and bind to V2 (agent, command, provider)
   const v1Config: Record<string, unknown> = {}
+  const rawPluginConfig = loadPluginConfig(directory, {})
   let providerModels: readonly V2ModelInfoLike[] | undefined
   if (typeof v1Hooks.config === "function") {
     try {
@@ -88,7 +90,6 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
 
       log("[v2-bridge] executing OMO V1 config pipeline for directory", { directory })
       await v1Hooks.config(v1Config)
-      const rawPluginConfig = loadPluginConfig(directory, {})
 
       const configDisposers = await bindConfigToV2({
         v2Context,
@@ -100,6 +101,21 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
     } catch (err) {
       log("[v2-bridge:config] error during config pipeline execution:", { error: String(err) })
     }
+  }
+
+  // 4b. Register OMO's code-only skills (security-research / security-review).
+  // V1 exposed them by starting an HTTP source server and appending its URL to `config.skills.urls`,
+  // but V2 has no `config` domain and the bridge never reads `skills`, so that handoff is dead here.
+  // V2 has a real `skill.add`, so the entries are registered directly instead.
+  try {
+    const skillDisposers = await bindRuntimeSkillsToV2({
+      v2Context,
+      pluginConfig: rawPluginConfig,
+      log,
+    })
+    allDisposers.push(...skillDisposers)
+  } catch (err) {
+    log("[v2-bridge:skill] failed to register runtime security skills:", { error: String(err) })
   }
 
   // 5. Bind Tools and Tool Hooks
