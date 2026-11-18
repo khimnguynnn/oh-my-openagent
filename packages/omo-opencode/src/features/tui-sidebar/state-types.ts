@@ -2,9 +2,25 @@ import type { BackgroundTaskStatus } from "../background-agent/types"
 
 export type AgentStatus = "busy" | "idle" | "error" | "running" | "retry"
 
+export type AgentOutcome = "succeeded" | "failed" | "interrupted"
+
 export type AgentRow = {
   readonly name: string
   readonly status: AgentStatus
+  /** Model id the agent runs on, when the source knows it. */
+  readonly model?: string
+  /** Model variant (for example a reasoning level), when the source knows it. */
+  readonly variant?: string
+  /** Theme token name the agent asked for, resolved against the theme at render time. */
+  readonly color?: string
+  /** Session title, used as the row's detail column. */
+  readonly title?: string
+  /** Session the row belongs to, so a click can open it. */
+  readonly sessionID?: string
+  /** Epoch millis the current run started, so elapsed time needs no extra clock. */
+  readonly activeSince?: number
+  /** Terminal outcome, when the session already finished. */
+  readonly outcome?: AgentOutcome
 }
 
 export type JobRow = {

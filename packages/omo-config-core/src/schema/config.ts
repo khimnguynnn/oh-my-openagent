@@ -13,6 +13,7 @@ import { OmoSidePanelSettingsLayerSchema, OmoSidePanelSettingsSchema } from "./s
 import { OmoTaskSettingsLayerSchema, OmoTaskSettingsSchema } from "./task"
 import { OmoTeamsConfigLayerSchema, OmoTeamsConfigSchema } from "./team"
 import { OmoTelemetrySettingsLayerSchema, OmoTelemetrySettingsSchema } from "./telemetry"
+import { OmoTuiSettingsLayerSchema, OmoTuiSettingsSchema } from "./tui"
 import { OmoDeviceServiceSettingsLayerSchema, OmoDeviceServiceSettingsSchema } from "./device-service"
 import { OmoFormatOnMutationLayerSchema, OmoFormatOnMutationSchema } from "./format-on-mutation"
 import { OmoProvenanceSettingsSchema } from "./provenance"
@@ -54,6 +55,7 @@ export const OmoTypedHarnessConfigSchema = z
     telemetry: OmoTelemetrySettingsLayerSchema.optional(),
     device_service: OmoDeviceServiceSettingsLayerSchema.optional(),
     side_panel: OmoSidePanelSettingsLayerSchema.optional(),
+    tui: OmoTuiSettingsLayerSchema.optional(),
     computer: OmoComputerSettingsLayerSchema.optional(),
     disabled_skills: OmoDisabledSkillsSchema.optional(),
     exclude_models: OmoExcludedModelsSchema.optional(),
@@ -78,6 +80,7 @@ export const OmoConfigProfileSchema = z
     telemetry: OmoTelemetrySettingsLayerSchema.optional(),
     device_service: OmoDeviceServiceSettingsLayerSchema.optional(),
     side_panel: OmoSidePanelSettingsLayerSchema.optional(),
+    tui: OmoTuiSettingsLayerSchema.optional(),
     computer: OmoComputerSettingsLayerSchema.optional(),
     disabled_skills: OmoDisabledSkillsSchema.optional(),
     exclude_models: OmoExcludedModelsSchema.optional(),
@@ -107,6 +110,7 @@ export const OmoConfigSchema = z
     telemetry: OmoTelemetrySettingsSchema.optional(),
     device_service: OmoDeviceServiceSettingsSchema.optional(),
     side_panel: OmoSidePanelSettingsSchema.optional(),
+    tui: OmoTuiSettingsSchema.optional(),
     computer: OmoComputerSettingsSchema.optional(),
     disabled_skills: OmoDisabledSkillsSchema.optional(),
     exclude_models: OmoExcludedModelsSchema.optional(),
@@ -139,6 +143,7 @@ export const OmoConfigLayerSchema = z
     telemetry: OmoTelemetrySettingsLayerSchema.optional(),
     device_service: OmoDeviceServiceSettingsLayerSchema.optional(),
     side_panel: OmoSidePanelSettingsLayerSchema.optional(),
+    tui: OmoTuiSettingsLayerSchema.optional(),
     computer: OmoComputerSettingsLayerSchema.optional(),
     disabled_skills: OmoDisabledSkillsSchema.optional(),
     exclude_models: OmoExcludedModelsSchema.optional(),

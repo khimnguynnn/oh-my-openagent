@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test"
 
 import { computeView } from "./compute-view"
-import { buildViewNodes, describeView } from "./render-view"
+import { ACTIVITY_FRAMES, STATUS_DOT_GLYPH, STATUS_HISTORY_GLYPH, STATUS_STOPPED_GLYPH } from "./constants"
+import { agentGlyph, agentLine, buildViewNodes, describeView, isAgentActive } from "./render-view"
 import type { ComputeViewSections } from "./compute-view"
-import type { SidebarView } from "./state-types"
+import type { AgentRow, SidebarView } from "./state-types"
 
 const theme = {
   accent: "accent",
@@ -106,3 +107,153 @@ describe("tui sidebar renderView", () => {
     expect(nodes[0]?.kind).toBe("box")
   })
 })
+
+describe("tui sidebar agent rows", () => {
+  const running: AgentRow = { name: "oracle", status: "running", sessionID: "s-1" }
+
+  it("#given a running agent #when asking for a glyph #then it steps through the spinner frames", () => {
+    // given
+    const frames = [0, 1, 2, ACTIVITY_FRAMES.length]
+
+    // when
+    const glyphs = frames.map((frame) => agentGlyph(running, frame))
+
+    // then
+    expect(glyphs[0]).toBe(ACTIVITY_FRAMES[0])
+    expect(glyphs[1]).toBe(ACTIVITY_FRAMES[1])
+    expect(glyphs[2]).toBe(ACTIVITY_FRAMES[2])
+    expect(glyphs[3]).toBe(ACTIVITY_FRAMES[0])
+  })
+
+  it("#given rows that are not running #when asking for a glyph #then the glyph names their terminal state", () => {
+    // given
+    const idle: AgentRow = { name: "oracle", status: "idle" }
+    const ran: AgentRow = { name: "oracle", status: "idle", activeSince: 1_700_000_000_000 }
+    const failed: AgentRow = { name: "oracle", status: "error", outcome: "failed" }
+
+    // when
+    const glyphs = [agentGlyph(idle), agentGlyph(ran), agentGlyph(failed)]
+
+    // then
+    expect(glyphs).toEqual([STATUS_DOT_GLYPH, STATUS_HISTORY_GLYPH, STATUS_STOPPED_GLYPH])
+  })
+
+  it("#given each active status #when checking #then only busy running and retry count as active", () => {
+    // given
+    const statuses = ["busy", "running", "retry", "idle", "error"] as const
+
+    // when
+    const active = statuses.map((status) => isAgentActive(status))
+
+    // then
+    expect(active).toEqual([true, true, true, false, false])
+  })
+
+  it("#given an agent with a model and a title #when building its line #then both columns appear after the glyph", () => {
+    // given
+    const row: AgentRow = { name: "oracle", status: "running", model: "gpt-5", title: "audit bridge" }
+
+    // when
+    const line = agentLine(row, "*")
+
+    // then
+    expect(line).toBe("* oracle gpt-5 audit bridge")
+  })
+
+  it("#given an agent with no model #when building its line #then the model column is omitted rather than left blank", () => {
+    // given
+    const row: AgentRow = { name: "oracle", status: "idle" }
+
+    // when
+    const line = agentLine(row, "*")
+
+    // then
+    expect(line).toBe("* oracle idle")
+    expect(line).not.toContain("  ")
+  })
+
+  it("#given a model variant and an over-long model id #when building its line #then the pair is truncated to the column budget", () => {
+    // given
+    const row: AgentRow = {
+      name: "oracle",
+      status: "running",
+      model: "a-very-long-model-identifier",
+      variant: "max",
+    }
+
+    // when
+    const line = agentLine(row, "*")
+    const modelColumn = line.split(" ")[2] ?? ""
+
+    // then
+    expect(modelColumn.length).toBeLessThanOrEqual(16)
+    expect(modelColumn.endsWith("...")).toBe(true)
+  })
+
+  it("#given an agent with a session and a click target #when building nodes #then the row carries a ref and a mouse handler", () => {
+    // given
+    const selected: string[] = []
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: [running] } })
+
+    // when
+    const nodes = buildViewNodes(view, theme, { onSelectAgent: (id) => selected.push(id) })
+    const row = firstTextWithRef(nodes, "agent:s-1")
+
+    // then
+    expect(row).toBeDefined()
+    expect(typeof row?.props.onMouseDown).toBe("function")
+    ;(row?.props.onMouseDown as () => void)()
+    expect(selected).toEqual(["s-1"])
+  })
+
+  it("#given no click target #when building nodes #then the row has no handler instead of a dead click", () => {
+    // given
+    const view = computeView({ ...activeSections, agents: { kind: "list", agents: [running] } })
+
+    // when
+    const nodes = buildViewNodes(view, theme)
+    const row = firstTextWithRef(nodes, "agent:s-1")
+
+    // then
+    expect(row?.props.onMouseDown).toBeUndefined()
+  })
+
+  it("#given an agent naming a theme token #when building nodes #then that token colours the row", () => {
+    // given
+    const coloured: AgentRow = { name: "oracle", status: "idle", color: "accent" }
+    const unknown: AgentRow = { name: "oracle", status: "idle", color: "not-a-token" }
+    const errored: AgentRow = { name: "oracle", status: "error" }
+
+    // when
+    const accentFg = firstTextContaining(agentNodesOf([coloured]), "oracle")
+    const fallbackFg = firstTextContaining(agentNodesOf([unknown]), "oracle")
+    const errorFg = firstTextContaining(agentNodesOf([errored]), "oracle")
+
+    // then
+    expect(accentFg?.props.fg).toBe(theme.accent)
+    expect(fallbackFg?.props.fg).toBe(theme.text)
+    expect(errorFg?.props.fg).toBe(theme.error)
+  })
+})
+
+function firstTextWithRef(nodes: readonly ViewNode[], ref: string): ViewNode | undefined {
+  for (const node of nodes) {
+    if (node.kind === "text" && node.ref === ref) return node
+    const hit = firstTextWithRef(node.children ?? [], ref)
+    if (hit !== undefined) return hit
+  }
+  return undefined
+}
+
+function agentNodesOf(agents: readonly AgentRow[]): readonly ViewNode[] {
+  return buildViewNodes(computeView({ ...activeSections, agents: { kind: "list", agents } }), theme)
+}
+
+function firstTextContaining(nodes: readonly ViewNode[], value: string): ViewNode | undefined {
+  for (const node of nodes) {
+    if (node.kind === "text" && node.text?.includes(value) === true) return node
+    const hit = firstTextContaining(node.children ?? [], value)
+    if (hit !== undefined) return hit
+  }
+  return undefined
+}

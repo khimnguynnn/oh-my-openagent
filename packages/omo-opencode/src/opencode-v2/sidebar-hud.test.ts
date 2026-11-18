@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
-import type { SidebarView } from "../features/tui-sidebar/state-types"
+import { ACTIVITY_FRAMES } from "../features/tui-sidebar/constants"
+import type { AgentRow, SidebarView } from "../features/tui-sidebar/state-types"
 import { startSidebarHud } from "./sidebar-hud"
 import type { SidebarSlotHost } from "./sidebar-hud"
 
@@ -37,24 +38,36 @@ function recordingHost(): {
   }
 }
 
+type Props = Record<string, unknown>
+
 function fakeSolid(): {
   readonly tags: string[]
+  readonly props: Props[]
+  readonly inserted: string[]
   readonly solid: {
     createElement: (tag: string) => { tag: string }
-    insert: () => void
-    setProp: () => void
+    insert: (parent: unknown, child: unknown) => void
+    setProp: (node: unknown, name: string, value: unknown) => void
   }
 } {
   const tags: string[] = []
+  const props: Props[] = []
+  const inserted: string[] = []
   return {
     tags,
+    props,
+    inserted,
     solid: {
       createElement: (tag) => {
         tags.push(tag)
         return { tag }
       },
-      insert: () => undefined,
-      setProp: () => undefined,
+      insert: (_parent, child) => {
+        if (typeof child === "string") inserted.push(child)
+      },
+      setProp: (_node, name, value) => {
+        props.push({ [name]: value })
+      },
     },
   }
 }
@@ -66,10 +79,6 @@ type ViewSource = {
   readonly failOn: (call: number, error: Error) => void
 }
 
-/**
- * A view source whose N-th call settles a promise, so a test awaits the poll
- * itself instead of sleeping for a guess at how long a timer needs.
- */
 function viewSource(view: () => SidebarView): ViewSource {
   let calls = 0
   const waiters: Array<{ readonly target: number; readonly resolve: () => void }> = []
@@ -114,6 +123,17 @@ async function withTimeout(signal: Promise<void>, what: string): Promise<void> {
   }
 }
 
+const ABSENCE_WINDOW_MS = 200
+
+/**
+ * Proves an animation frame did NOT arrive. A frame timer with the test's 5ms period would land
+ * many times inside the window, so observing zero paints after it is a real negative result.
+ */
+async function expectNoPaint(painted: () => number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ABSENCE_WINDOW_MS))
+  expect(painted()).toBe(0)
+}
+
 const ACTIVE_VIEW: SidebarView = {
   kind: "active",
   configBanner: { kind: "none" },
@@ -128,6 +148,11 @@ const ACTIVE_VIEW_CHANGED: SidebarView = {
   agents: { kind: "list", agents: [{ name: "explore", status: "busy" }] },
   jobs: { kind: "none" },
   loop: { kind: "none" },
+}
+
+const IDLE_VIEW: SidebarView = {
+  kind: "idle",
+  roster: { kind: "empty" },
 }
 
 describe("V2 sidebar HUD", () => {
@@ -276,6 +301,311 @@ describe("V2 sidebar HUD", () => {
     // then
     expect(errors.map((error) => error.message)).toEqual(["mirror unreadable"])
     expect(claims).toHaveLength(1)
+    hud?.dispose()
+  })
+})
+
+describe("V2 sidebar HUD live agent rows", () => {
+  const contextAgents: readonly AgentRow[] = [
+    { name: "oracle", status: "running", model: "gpt-5", sessionID: "s-oracle", title: "audit the bridge" },
+  ]
+
+  it("#given the mirror has no agents but the context does #when the HUD renders #then the context row is drawn", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, inserted } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => contextAgents,
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(inserted).toContain("Agents")
+    expect(inserted.some((line) => line.includes("oracle") && line.includes("gpt-5"))).toBe(true)
+    expect(inserted.some((line) => line.includes("audit the bridge"))).toBe(true)
+    hud?.dispose()
+  })
+
+  it("#given the context returns no agents #when the HUD renders #then the section is absent", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, inserted } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => [],
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(inserted).not.toContain("Agents")
+    hud?.dispose()
+  })
+
+  it("#given an idle mirror view #when the context reports a running agent #then the view becomes active with agents", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, inserted } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => IDLE_VIEW,
+      readAgents: () => contextAgents,
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(inserted).toContain("Agents")
+    expect(inserted).not.toContain("Models")
+    expect(inserted.some((line) => line.includes("oracle"))).toBe(true)
+    hud?.dispose()
+  })
+
+  it("#given a broken config view #when the context reports an agent #then the banner survives the promotion", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, inserted } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ({ kind: "broken", messages: ["bad key"] }),
+      readAgents: () => contextAgents,
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(inserted).toContain("Agents")
+    expect(inserted).toContain("config invalid - run doctor")
+    hud?.dispose()
+  })
+
+  it("#given the agent source throws #when the HUD renders #then the mirror view still renders", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, tags } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => {
+        throw new Error("context exploded")
+      },
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(hud).not.toBeNull()
+    expect(tags).toContain("text")
+    hud?.dispose()
+  })
+
+  it("#given a click target #when an agent row is rendered #then the row carries the session selection", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, props } = fakeSolid()
+    const selected: string[] = []
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => contextAgents,
+      onSelectAgent: (sessionID) => selected.push(sessionID),
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+    const handler = props.find((entry) => typeof entry.onMouseDown === "function")?.onMouseDown
+    expect(typeof handler).toBe("function")
+    ;(handler as () => void)()
+
+    // then
+    expect(selected).toEqual(["s-oracle"])
+    hud?.dispose()
+  })
+
+  it("#given no click target #when an agent row is rendered #then the row has no handler instead of a dead click", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, props } = fakeSolid()
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => contextAgents,
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(props.some((entry) => typeof entry.onMouseDown === "function")).toBe(false)
+    hud?.dispose()
+  })
+})
+
+describe("V2 sidebar HUD agent scoping", () => {
+  it("#given the host render passes a session #when the HUD renders #then the agent reader is scoped to it", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid } = fakeSolid()
+    const asked: Array<string | undefined> = []
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: (sessionID) => {
+        asked.push(sessionID)
+        return [{ name: "oracle", status: "running", sessionID: "s-oracle" }]
+      },
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render({ sessionID: "s-root" })
+
+    // then
+    expect(asked).toContain("s-root")
+    hud?.dispose()
+  })
+
+  it("#given the host render passes no session #when the HUD renders #then the reader still gets a call", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid } = fakeSolid()
+    const asked: Array<string | undefined> = []
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host,
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: (sessionID) => {
+        asked.push(sessionID)
+        return []
+      },
+      intervalMs: 60_000,
+    })
+
+    // when
+    claims[0]?.render()
+
+    // then
+    expect(asked).toEqual([undefined])
+    hud?.dispose()
+  })
+})
+
+describe("V2 sidebar HUD spinner", () => {
+  it("#given an active agent #when a frame elapses #then the mounted node is rewritten in place without a new claim", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid, props } = fakeSolid()
+    const frames: unknown[] = []
+    const PAINTS = 3
+    let painted: (() => void) | null = null
+    const firstPaint = new Promise<void>((resolve) => {
+      painted = resolve
+    })
+    const hostWithRenderer: SidebarSlotHost = {
+      ...host,
+      renderer: {
+        requestRender: () => {
+          if (frames.length >= PAINTS) painted?.()
+        },
+      },
+    }
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host: hostWithRenderer,
+      solid: {
+        ...solid,
+        setProp: (node, name, value) => {
+          solid.setProp(node, name, value)
+          if (name === "content") frames.push(value)
+        },
+      },
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => [{ name: "oracle", status: "running", sessionID: "s-oracle" }],
+      intervalMs: 60_000,
+      frameMs: 5,
+    })
+
+    // when
+    claims[0]?.render()
+    await withTimeout(firstPaint, "three spinner frames to repaint through requestRender")
+
+    // then
+    expect(frames.length).toBeGreaterThan(0)
+    const first = String(frames[0])
+    expect(first).toContain("oracle")
+    expect(ACTIVITY_FRAMES.includes(first.charAt(0))).toBe(true)
+    // a later frame must actually advance, otherwise the spinner is a static glyph
+    const distinct = new Set(frames.map((frame) => String(frame).charAt(0)))
+    expect(distinct.size).toBeGreaterThan(1)
+    expect(claims).toHaveLength(1)
+    hud?.dispose()
+  })
+
+  it("#given no active agent #when the HUD starts #then no animation timer is armed", async () => {
+    // given
+    const { host, claims } = recordingHost()
+    const { solid } = fakeSolid()
+    let renders = 0
+    const hud = await startSidebarHud({
+      directory: "/proj",
+      host: { ...host, renderer: { requestRender: () => (renders += 1) } },
+      solid,
+      isEnabled: async () => true,
+      readView: async () => ACTIVE_VIEW,
+      readAgents: () => [{ name: "oracle", status: "idle", sessionID: "s-oracle" }],
+      intervalMs: 60_000,
+      frameMs: 5,
+    })
+
+    // when
+    claims[0]?.render()
+    await expectNoPaint(() => renders)
+
+    // then
+    expect(renders).toBe(0)
     hud?.dispose()
   })
 })

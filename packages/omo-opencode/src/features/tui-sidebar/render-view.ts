@@ -1,8 +1,24 @@
-import { LABEL_MAX } from "./constants"
+import {
+  ACTIVITY_FRAMES,
+  AGENT_COLOR_TOKENS,
+  AGENT_MODEL_MAX,
+  LABEL_MAX,
+  STATUS_DOT_GLYPH,
+  STATUS_HISTORY_GLYPH,
+  STATUS_STOPPED_GLYPH,
+} from "./constants"
 import { box, text } from "./element-helpers"
 import type { ViewNode } from "./element-helpers"
 import { assertNever } from "./state-types"
-import type { AgentsState, ConfigBanner, JobBoardState, LoopState, RosterState, SidebarView } from "./state-types"
+import type {
+  AgentRow,
+  AgentsState,
+  ConfigBanner,
+  JobBoardState,
+  LoopState,
+  RosterState,
+  SidebarView,
+} from "./state-types"
 
 export type ThemeLike = {
   readonly error?: unknown
@@ -15,14 +31,23 @@ export type ThemeLike = {
   readonly borderSubtle?: unknown
 }
 
-export function buildViewNodes(view: SidebarView, theme: ThemeLike): ViewNode[] {
+export type ViewNodeOptions = {
+  /** Click handler for an agent row. Absent leaves rows unclickable rather than a dead click. */
+  readonly onSelectAgent?: (sessionID: string) => void
+}
+
+export function buildViewNodes(
+  view: SidebarView,
+  theme: ThemeLike,
+  options: ViewNodeOptions = {},
+): ViewNode[] {
   switch (view.kind) {
     case "active":
       return [
         box({ flexDirection: "column", gap: 1 }, [
           ...configBannerNodes(view.configBanner, theme),
           ...loopNodes(view.loop, theme),
-          ...agentNodes(view.agents, theme),
+          ...agentNodes(view.agents, theme, options),
           ...jobNodes(view.jobs, theme),
         ]),
       ]
@@ -116,21 +141,59 @@ function loopLines(loop: LoopState): string[] {
   }
 }
 
-function agentNodes(agents: AgentsState, theme: ThemeLike): ViewNode[] {
+function agentNodes(agents: AgentsState, theme: ThemeLike, options: ViewNodeOptions): ViewNode[] {
   switch (agents.kind) {
     case "none":
       return []
     case "list":
-      return [
-        section(
-          "Agents",
-          theme,
-          agents.agents.map((agent) => text({ fg: theme.text }, `${truncate(agent.name)} ${agent.status}`)),
-        ),
-      ]
+      return [section("Agents", theme, agents.agents.map((agent) => agentRowNode(agent, theme, options)))]
     default:
       return assertNever(agents)
   }
+}
+
+function agentRowNode(agent: AgentRow, theme: ThemeLike, options: ViewNodeOptions): ViewNode {
+  const props: Record<string, unknown> = { fg: agentColor(agent, theme) }
+  const sessionID = agent.sessionID
+  if (sessionID !== undefined && options.onSelectAgent !== undefined) {
+    const select = options.onSelectAgent
+    props.onMouseDown = () => select(sessionID)
+  }
+  const ref = sessionID === undefined ? {} : { ref: `agent:${sessionID}` }
+  return text(props, agentLine(agent, agentGlyph(agent)), ref)
+}
+
+export function agentLine(agent: AgentRow, glyph: string): string {
+  const name = truncate(agent.name)
+  const detail = agent.title === undefined ? agent.status : truncate(agent.title)
+  const model = agent.model === undefined ? "" : modelLabel(agent.model, agent.variant)
+  return model === "" ? `${glyph} ${name} ${detail}` : `${glyph} ${name} ${model} ${detail}`
+}
+
+function modelLabel(model: string, variant: string | undefined): string {
+  const label = variant === undefined || variant === "" ? model : `${model}:${variant}`
+  return label.length <= AGENT_MODEL_MAX ? label : `${label.slice(0, AGENT_MODEL_MAX - 3)}...`
+}
+
+export function agentGlyph(agent: AgentRow, frameIndex = 0): string {
+  if (isAgentActive(agent.status)) return ACTIVITY_FRAMES[frameIndex % ACTIVITY_FRAMES.length] ?? ACTIVITY_FRAMES[0]!
+  if (agent.outcome !== undefined) return STATUS_STOPPED_GLYPH
+  return agent.activeSince === undefined ? STATUS_DOT_GLYPH : STATUS_HISTORY_GLYPH
+}
+
+export function isAgentActive(status: AgentRow["status"]): boolean {
+  return status === "busy" || status === "running" || status === "retry"
+}
+
+function agentColor(agent: AgentRow, theme: ThemeLike): unknown {
+  if (agent.status === "error") return theme.error
+  if (agent.status === "retry") return theme.warning
+  const named = agent.color
+  if (named !== undefined && (AGENT_COLOR_TOKENS as readonly string[]).includes(named)) {
+    const themed = theme[named as keyof ThemeLike]
+    if (themed !== undefined) return themed
+  }
+  return theme.text
 }
 
 function agentLines(agents: AgentsState): string[] {

@@ -1,5 +1,6 @@
 import { assertNever } from "./state-types"
 import type {
+  AgentRow,
   AgentsState,
   ConfigState,
   JobBoardState,
@@ -33,6 +34,24 @@ export function computeView(sections: ComputeViewSections): SidebarView {
   }
 
   return { kind: "idle", roster: sections.roster }
+}
+
+/**
+ * Folds agent rows from the live TUI context into an already computed view. On V2 the mirror
+ * reports no agents at all (the bridge's `session.status()` is empty), so without this a
+ * session with no ULW loop and no jobs would sit on the idle roster and never show agents.
+ */
+export function applyLiveAgents(view: SidebarView, rows: readonly AgentRow[]): SidebarView {
+  const agents: AgentsState = rows.length === 0 ? { kind: "none" } : { kind: "list", agents: rows }
+  if (view.kind === "active") return { ...view, agents }
+  if (rows.length === 0) return view
+  return {
+    kind: "active",
+    loop: { kind: "none" },
+    agents,
+    jobs: { kind: "none" },
+    configBanner: view.kind === "broken" ? { kind: "invalid" } : { kind: "none" },
+  }
 }
 
 export function viewKey(view: SidebarView): string {
@@ -78,7 +97,23 @@ function agentsKeyParts(agents: AgentsState): readonly unknown[] {
     case "none":
       return ["agents", "none"]
     case "list":
-      return ["agents", "list", agents.agents.map((agent) => [agent.name, agent.status])]
+      // activeSince is excluded on purpose: the glyph reads it, the animation timer owns the
+      // repaint, and keying on it would re-claim the slot on every frame.
+      return [
+        "agents",
+        "list",
+        agents.agents.map((agent) => [
+          agent.name,
+          agent.status,
+          agent.model ?? "",
+          agent.variant ?? "",
+          agent.color ?? "",
+          agent.title ?? "",
+          agent.sessionID ?? "",
+          agent.outcome ?? "",
+          agent.activeSince === undefined ? "" : "ran",
+        ]),
+      ]
     default:
       return assertNever(agents)
   }
