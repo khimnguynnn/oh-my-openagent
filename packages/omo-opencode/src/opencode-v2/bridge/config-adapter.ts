@@ -1,5 +1,6 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
 import { getAgentConfigKey, getAgentDisplayName } from "../../shared/agent-display-names"
+import { validateAgentOrder } from "../../shared/agent-ordering"
 import { log } from "../../shared/logger"
 import {
   createV2PermissionProjector,
@@ -77,6 +78,28 @@ export function expandCommandTemplate(
 }
 
 /**
+ * Returns the agent ids in the order they should be registered with V2, canonical core agents
+ * first.
+ *
+ * On V2 this is the only ordering lever that exists. `Agent.Info` has no `order` field (its schema
+ * strips unknown keys), `Agent.list` does not sort, and `editor.update` on an unseen id does
+ * `agents.set(id, agent)`, so a Map's insertion order is what the picker renders. Writing the core
+ * agents first therefore makes them occupy consecutive leading slots, and the active agent is
+ * hoisted to index 0 by the host.
+ *
+ * The canonical key sequence comes from `validateAgentOrder`, which is also what enforces the
+ * documented rule that no second ordering constant may exist.
+ */
+function orderAgentIds(agentIds: readonly string[], agentOrder: readonly string[] | undefined): string[] {
+  const canonical = validateAgentOrder(agentOrder).order
+  const present = new Set(agentIds)
+  const ordered = canonical.filter((configKey) => present.has(configKey))
+  const orderedSet = new Set(ordered)
+  const rest = agentIds.filter((id) => !orderedSet.has(id)).sort((a, b) => a.localeCompare(b))
+  return [...ordered, ...rest]
+}
+
+/**
  * Binds OMO V1 config results to OpenCode V2 domains (agent, command, provider).
  */
 export async function bindConfigToV2(args: {
@@ -147,15 +170,30 @@ export async function bindConfigToV2(args: {
           }
         }
 
-        for (const [id, agentConfig] of Object.entries(agentMap)) {
+        const agentOrder = orderAgentIds(Object.keys(agentMap), rawPluginConfig?.agent_order)
+        if (agentOrder.length > 0) {
+          log("[v2-bridge:config] registering agents in canonical order:", { order: agentOrder })
+        }
+
+        for (const id of agentOrder) {
+          const agentConfig = agentMap[id]
           if (!agentConfig) continue
 
           try {
             editor.update(id, (agent) => {
               // 1. Name
-              const displayName = agentConfig.name ?? getAgentDisplayName(id)
-              if (displayName && !agent.name) {
-                agent.name = displayName
+              // V2 pre-fills `name` with the id, so a guard on `!agent.name` would discard every
+              // display name and the picker renders raw lowercase ids. V2 keys on `id` everywhere,
+              // so `name` is display-only and safe to overwrite. An explicit config name wins, and
+              // a key with no display-name entry is left alone so host built-ins such as `build`
+              // keep the capitalized name V2 gave them.
+              const explicitName = typeof agentConfig.name === "string" ? agentConfig.name : undefined
+              const knownDisplayName = getAgentDisplayName(id)
+              const displayName = explicitName ?? (knownDisplayName !== id ? knownDisplayName : undefined)
+              if (displayName) {
+                // `Agent.Name` is a branded identifier type, so a plain string needs this assertion;
+                // it is scoped to the field's own type rather than widened to `any`.
+                agent.name = displayName as typeof agent.name
               }
 
               // 2. Model & Reasoning / Variant
@@ -241,12 +279,13 @@ export async function bindConfigToV2(args: {
                   return
                 }
                 if (typeof cmd.agent === "string" && cmd.agent) {
+                  const canonicalAgent = getAgentConfigKey(cmd.agent) || cmd.agent
                   try {
-                    await v2Context.session.switchAgent({ sessionID: inv.sessionID, agent: cmd.agent })
+                    await v2Context.session.switchAgent({ sessionID: inv.sessionID, agent: canonicalAgent })
                   } catch (err) {
                     log("[v2-bridge:command] failed to switch agent for command:", {
                       name,
-                      agent: cmd.agent,
+                      agent: canonicalAgent,
                       error: String(err),
                     })
                   }
