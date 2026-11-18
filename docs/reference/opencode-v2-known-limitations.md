@@ -65,6 +65,24 @@ Consequence: OMO's core agents (`sisyphus -> hephaestus -> prometheus -> atlas`)
 order and are contiguous, but they sit after the host's built-ins. Writing an `order` field, or
 biasing names with invisible characters, does not work and is forbidden.
 
+## Skills: code-only skills are pushed, not served
+
+V1 ships two skills that exist only in code, `security-research` and `security-review`, and makes
+them visible by starting a small HTTP server and appending its URL into `config.skills.urls`, which
+the host fetches. Neither half of that survives V2: the plugin context has no `config` domain, and
+`config.skills.urls` is never read.
+
+V2 has a real `skill.add` on `SkillEditor`, so those entries are registered directly instead. The
+`path` V2 stores for them is `skill://<name>/SKILL.md`, the same form the host uses for its own
+file-less skills, and `content` is the body alone because V2 reports every skill that way.
+
+Two things follow. Skills discovered from disk are unaffected, since V2's own loader finds those.
+And `disabled_skills` behaves exactly as it does on V1, because selection goes through the same
+`selectRuntimeSecuritySkills` source of truth.
+
+The HTTP source server still starts on V2 even though nothing consumes its URL. It is shared startup
+code and harmless, so removing it is a separate cleanup rather than part of the skill fix.
+
 ## Session todos
 
 `session.todo` returns `[]`. V2 has no session-todo API, so there is nothing to read.
