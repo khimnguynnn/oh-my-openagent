@@ -1,47 +1,44 @@
 import type { Context } from "@opencode/plugin/promise/plugin"
-import { createBuiltinMcps } from "../../mcp"
-import { loadMcpConfigs } from "../../features/claude-code-mcp-loader"
 import { log } from "../../shared/logger"
 
 function isPlainRecord(value: unknown): value is Record<string, string> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function isDisabled(value: unknown): boolean {
+  return typeof value === "object" && value !== null && (value as { enabled?: unknown }).enabled === false
+}
+
 export interface V2McpAdapterOptions {
   v2Context: Context
   directory: string
-  disabledMcps?: string[]
+  mcps: Record<string, unknown>
 }
 
 /**
- * Binds OMO built-in MCP servers and Claude Code .mcp.json servers into OpenCode V2.
+ * Projects OMO's merged MCP map into OpenCode V2.
+ *
+ * The map is `config.mcp` as written by `applyMcpConfig`, which has already merged the four tiers
+ * (built-in, Claude Code `.mcp.json`, the user's own config, plugin components) and applied both
+ * `disabled_mcps` and the user's `enabled: false` markers. Resolving MCPs here as well would create a
+ * second source of truth that silently disagrees with the first: the V1 pipeline's answer is the only
+ * one the host would have seen on V1.
  */
 export async function bindMcpToV2(options: V2McpAdapterOptions): Promise<Array<() => Promise<void>>> {
-  const { v2Context, directory, disabledMcps = [] } = options
+  const { v2Context, directory, mcps } = options
   const disposers: Array<() => Promise<void>> = []
 
   try {
-    // 1. Resolve built-in MCP configurations
-    const builtinMcps = createBuiltinMcps(disabledMcps, undefined, { cwd: directory })
-
-    // 2. Resolve optional Claude Code .mcp.json configurations
-    let claudeMcps: Record<string, unknown> = {}
-    try {
-      const loaded = await loadMcpConfigs(disabledMcps)
-      claudeMcps = (loaded.servers ?? {}) as Record<string, unknown>
-    } catch {
-      // Claude Code config optional
-    }
-
-    const allMcps: Record<string, unknown> = {
-      ...builtinMcps,
-      ...claudeMcps,
-    }
-
-    // 3. Register via v2Context.mcp.transform
+    let reported = false
     const registration = await v2Context.mcp.transform((editor) => {
-      for (const [name, config] of Object.entries(allMcps)) {
+      const registered: string[] = []
+      for (const [name, config] of Object.entries(mcps)) {
         if (!config || typeof config !== "object") continue
+
+        // `applyMcpConfig` deletes the names in `disabled_mcps` but leaves the user's `enabled: false`
+        // entries in place, so a projection that only inspected `type` would register a server the
+        // user explicitly turned off.
+        if (isDisabled(config)) continue
 
         // If the server is already registered in OpenCode config, do not overwrite
         if (editor.get(name) !== undefined) {
@@ -68,14 +65,26 @@ export async function bindMcpToV2(options: V2McpAdapterOptions): Promise<Array<(
             cwd: (config as { cwd?: string }).cwd ?? directory,
             ...(isPlainRecord(environment) ? { environment } : {}),
           } as any)
+        } else {
+          continue
         }
+
+        registered.push(name)
+      }
+
+      // V2 registers the callback and runs it later, once per registry recompute, so a log emitted
+      // right after `transform` resolves reports an empty list for a projection that succeeded. Only
+      // the first pass can describe what this binder actually did.
+      if (!reported) {
+        reported = true
+        log("[v2-bridge:mcp] projected OMO MCP servers into OpenCode V2", {
+          candidates: Object.keys(mcps).length,
+          registered,
+        })
       }
     })
 
     disposers.push(() => registration.dispose())
-    log("[v2-bridge:mcp] registered OMO MCP servers in OpenCode V2", {
-      count: Object.keys(allMcps).length,
-    })
   } catch (err) {
     log("[v2-bridge:mcp] failed to bind MCP servers:", { error: String(err) })
   }

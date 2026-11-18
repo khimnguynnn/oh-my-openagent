@@ -83,6 +83,24 @@ And `disabled_skills` behaves exactly as it does on V1, because selection goes t
 The HTTP source server still starts on V2 even though nothing consumes its URL. It is shared startup
 code and harmless, so removing it is a separate cleanup rather than part of the skill fix.
 
+## MCP servers are projected, not resolved
+
+OMO resolves MCP servers in one place, `applyMcpConfig`, which merges four tiers (built-in, Claude
+Code `.mcp.json`, the user's own `config.mcp`, plugin components), applies the user's `enabled: false`
+markers and deletes the names in `disabled_mcps`. The result lands in `config.mcp`, and the bridge
+projects exactly that onto V2.
+
+It used to do its own smaller merge, and that is why `disabled_mcps`, `websearch.provider` and plugin
+component MCP servers had no effect on V2: the adapter called `createBuiltinMcps` with an empty
+disabled list and no plugin config, and merged only two of the four tiers.
+
+Two consequences are worth knowing. A server the host (or another plugin) already declares always
+wins, because the projection skips any name that is already registered - so on a machine whose
+`opencode.json` lists the built-in servers, the bridge contributes nothing visible and that is
+correct, not a bug. And `oauth` is still sent as `false` for every remote server; whether V2's server
+schema accepts an OAuth field could not be established, since `@opencode/schema` is not installed and
+the shipped binary carries no readable schema annotation.
+
 ## Session todos
 
 `session.todo` returns `[]`. V2 has no session-todo API, so there is nothing to read.

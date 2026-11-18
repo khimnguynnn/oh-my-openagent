@@ -655,18 +655,27 @@ describe("OpenCode V2 Compatibility Bridge", () => {
   })
 
   describe("mcp-adapter", () => {
-    it("registers built-in OMO MCP servers via v2Context.mcp.transform", async () => {
+    it("projects the merged map from the V1 pipeline instead of resolving MCPs itself", async () => {
+      // given a merged map as `applyMcpConfig` would leave it
       const { context, registeredMcps } = createMockV2Context()
+      const mcps = {
+        context7: { type: "remote", url: "https://mcp.context7.com/mcp", enabled: true },
+        lsp: { type: "local", command: ["bun", "lsp.ts"], enabled: true },
+        turnedOff: { type: "remote", url: "https://off.example.com", enabled: false },
+      }
+
+      // when
       const disposers = await bindMcpToV2({
         v2Context: context,
         directory: process.cwd(),
+        mcps,
       })
 
+      // then every enabled entry is projected, and the disabled one is not
       expect(disposers.length).toBeGreaterThan(0)
       expect(registeredMcps.has("context7")).toBe(true)
-      expect(registeredMcps.has("grep_app")).toBe(true)
-      expect(registeredMcps.has("websearch")).toBe(true)
       expect(registeredMcps.has("lsp")).toBe(true)
+      expect(registeredMcps.has("turnedOff")).toBe(false)
 
       const context7 = registeredMcps.get("context7")
       expect(context7.type).toBe("remote")
@@ -674,13 +683,28 @@ describe("OpenCode V2 Compatibility Bridge", () => {
 
       // Existing servers are not overwritten
       registeredMcps.set("custom-server", { type: "remote", url: "https://custom.com" })
-      await bindMcpToV2({ v2Context: context, directory: process.cwd() })
+      await bindMcpToV2({
+        v2Context: context,
+        directory: process.cwd(),
+        mcps: { ...mcps, "custom-server": { type: "remote", url: "https://clobber.com" } },
+      })
       expect(registeredMcps.get("custom-server").url).toBe("https://custom.com")
 
       // Disposers work
       for (const dispose of disposers) {
         await expect(dispose()).resolves.toBeUndefined()
       }
+    })
+
+    it("registers nothing when the pipeline produced an empty map", async () => {
+      // given an empty merged map
+      const { context, registeredMcps } = createMockV2Context()
+
+      // when
+      await bindMcpToV2({ v2Context: context, directory: process.cwd(), mcps: {} })
+
+      // then the built-in servers are NOT conjured here, because resolution is not this layer's job
+      expect(registeredMcps.size).toBe(0)
     })
   })
 
