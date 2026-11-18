@@ -21,6 +21,10 @@ export type BridgeCleanup = () => Promise<void>
  */
 const SHELL_UNAVAILABLE = undefined as unknown as PluginInput["$"]
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 /**
  * V2 exposes typed domains and never tells a plugin the HTTP server URL, so there is nothing to
  * advertise here. A guessed URL is worse than none: session listing builds an SDK client from it,
@@ -136,12 +140,23 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
   allDisposers.push(...sessionDisposers)
 
   // 7. Bind MCP Servers
+  // `config.mcp` is written by phase 6 of the V1 config pipeline (`applyMcpConfig`), which has already
+  // merged the built-in servers, the Claude Code `.mcp.json` ones, the user's own config and the plugin
+  // components, then applied `disabled_mcps` and the `enabled: false` markers. Projecting that answer
+  // keeps one source of truth; resolving MCPs again here is what made `disabled_mcps` dead on V2.
   if (v2Context.mcp) {
-    const mcpDisposers = await bindMcpToV2({
-      v2Context,
-      directory,
-    })
-    allDisposers.push(...mcpDisposers)
+    const pipelineProducedMcps =
+      typeof v1Hooks.config === "function" && isPlainRecord(v1Config.mcp)
+    if (pipelineProducedMcps) {
+      const mcpDisposers = await bindMcpToV2({
+        v2Context,
+        directory,
+        mcps: v1Config.mcp as Record<string, unknown>,
+      })
+      allDisposers.push(...mcpDisposers)
+    } else {
+      log("[v2-bridge:mcp] no MCP config from the V1 pipeline, skipping projection")
+    }
   }
 
   // 8. Bind Event Subscription with proper V1 EventInput adaptation
