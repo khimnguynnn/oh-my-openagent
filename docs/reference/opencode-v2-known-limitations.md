@@ -4,6 +4,44 @@ Behavior the V2 bridge cannot reproduce because OpenCode V2 provides no API for 
 does not. Each entry states what is missing, why, and what the user sees. These are not bugs to fix;
 they are differences to expect when running OMO on V2.
 
+## Formatter does not run after an edit
+
+`tools/hashline-edit/formatter-trigger.ts` resolves formatters through
+`client.config.get({ query: { directory } })`, and the bridge answers that with an empty object, so
+`resolveFormatters()` finds nothing and no formatter runs after a hashline edit.
+
+This is not a shortcut in the client shim. V2's plugin context exposes no `config` domain at all
+(aisdk, command, credential, event, experimental, integration, mcp, model, permission, plugin,
+provider, reference, rpc, session, shell, skill, storage, tool, vcs, websearch, worktree), so a
+plugin has no route to the host's merged config and nothing to read `formatter` from.
+
+The V1 pipeline's own formatter guard (`config-handler.ts` snapshots `config.formatter` and restores
+it at the end) is therefore inert on V2: the config object the bridge supplies starts empty, so the
+guard restores `undefined` over `undefined`. `V1ConfigResult` still declares the key so the V1 path
+keeps its contract.
+
+The same missing domain also empties `delegate-task`'s system-default-model lookup and
+`runtime-skill-resolver`'s host skill list, both of which already fall back safely.
+
+## Provider catalog is read, not received
+
+V2 never passes a provider map into a plugin, and the V1 config pipeline's phase 1
+(`applyProviderConfig`) derives the model context-limit cache, the image-capable model set, and the
+Anthropic 1M-context flag from exactly that map. The bridge therefore reads `provider.list()` and
+`model.list()` and seeds the map itself before running the pipeline.
+
+Two consequences worth knowing:
+
+- The plugin's `model.list()` domain call returns a wider catalog than the HTTP `model.list`
+  endpoint (observed: 635 models and 8 providers versus 307 and 7), because the domain reports
+  candidates including models disabled by earlier transforms. Extra entries are harmless, since the
+  caches are keyed `providerID/modelID` lookups.
+- Models sharing a `modelID` across variant entries collapse to one cache entry, which is correct:
+  variants of a model share its context limit.
+
+If either listing call fails, the bridge leaves the provider map unset and the caches stay empty,
+which is the pre-seeding behavior rather than a load failure.
+
 ## Session todos
 
 `session.todo` returns `[]`. V2 has no session-todo API, so there is nothing to read.

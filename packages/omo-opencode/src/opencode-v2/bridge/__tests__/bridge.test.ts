@@ -5,6 +5,7 @@ import { bindToolsToV2 } from "../tool-adapter"
 import { bindSessionHooksToV2 } from "../session-adapter"
 import { bindMcpToV2 } from "../mcp-adapter"
 import { bindConfigToV2, expandCommandTemplate, parseModelString } from "../config-adapter"
+import { resolveProviderForBareModel } from "../provider-adapter"
 import { setupOpenCodeV2Bridge } from "../bridge-runner"
 
 function createMockV2Context(overrides: Partial<Record<string, unknown>> = {}): {
@@ -663,17 +664,72 @@ describe("OpenCode V2 Compatibility Bridge", () => {
   describe("config-adapter", () => {
     it("parseModelString extracts providerID and modelID properly", () => {
       const parsed1 = parseModelString("kiro-proxy/claude-opus-5.5-thinking", "max")
-      expect(parsed1.providerID).toBe("kiro-proxy")
-      expect(parsed1.id).toBe("claude-opus-5.5-thinking")
-      expect(parsed1.variant).toBe("max")
+      expect(parsed1?.providerID).toBe("kiro-proxy")
+      expect(parsed1?.id).toBe("claude-opus-5.5-thinking")
+      expect(parsed1?.variant).toBe("max")
 
       const parsed2 = parseModelString("mmodiary/doitac2/deepseek-v4-pro")
-      expect(parsed2.providerID).toBe("mmodiary")
-      expect(parsed2.id).toBe("doitac2/deepseek-v4-pro")
+      expect(parsed2?.providerID).toBe("mmodiary")
+      expect(parsed2?.id).toBe("doitac2/deepseek-v4-pro")
+    })
 
-      const parsed3 = parseModelString("claude-sonnet-4-5")
-      expect(parsed3.providerID).toBe("anthropic")
-      expect(parsed3.id).toBe("claude-sonnet-4-5")
+    it("resolves a bare model id through the live catalog instead of assuming anthropic", () => {
+      // given a catalog where exactly one provider serves the bare id
+      const models = [
+        { id: "gpt-6.2-sol", providerID: "openai" },
+        { id: "claude-sonnet-4-5", providerID: "anthropic" },
+      ]
+      const resolve = (modelID: string) => resolveProviderForBareModel(modelID, models)
+
+      // when parsing a bare id the catalog knows
+      const parsed = parseModelString("gpt-6.2-sol", undefined, resolve)
+
+      // then it routes to the provider that actually serves it
+      expect(parsed?.providerID).toBe("openai")
+      expect(parsed?.id).toBe("gpt-6.2-sol")
+    })
+
+    it("refuses to guess a provider for a bare model id nothing serves", () => {
+      // given a catalog without the requested id
+      const resolve = (modelID: string) => resolveProviderForBareModel(modelID, [])
+
+      // when parsing a bare id, with and without a resolver
+      const unresolved = parseModelString("claude-sonnet-4-5", undefined, resolve)
+      const noResolver = parseModelString("claude-sonnet-4-5")
+
+      // then nothing is returned, so the caller can skip rather than route to anthropic
+      expect(unresolved).toBeUndefined()
+      expect(noResolver).toBeUndefined()
+    })
+
+    it("skips the model write when a bare model id cannot be resolved", async () => {
+      // given an agent configured with a bare model id no provider serves
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when the bridge binds the config with an empty catalog
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: { agent: { sisyphus: { name: "sisyphus", model: "mystery-model" } } },
+        providerModels: [],
+      })
+
+      // then the agent keeps the host's model rather than gaining a fabricated one
+      expect(updatedAgents.get("sisyphus")?.model).toBeUndefined()
+    })
+
+    it("writes the model when the catalog resolves the bare id", async () => {
+      // given a catalog that serves the bare id
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when the bridge binds the config
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: { agent: { sisyphus: { name: "sisyphus", model: "gpt-6.2-sol" } } },
+        providerModels: [{ id: "gpt-6.2-sol", providerID: "openai" }],
+      })
+
+      // then the model is routed to the provider that serves it
+      expect(updatedAgents.get("sisyphus")?.model).toEqual({ providerID: "openai", id: "gpt-6.2-sol" })
     })
 
     it("binds OMO agent model overrides and default agent into V2 agent domain", async () => {

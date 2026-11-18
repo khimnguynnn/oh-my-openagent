@@ -7,6 +7,7 @@ import {
   toolFlagsToV2PermissionRules,
   toV2PermissionRules,
 } from "./permission-adapter"
+import { resolveProviderForBareModel, type V2ModelInfoLike } from "./provider-adapter"
 
 export interface V1ConfigResult {
   agent?: Record<string, any>
@@ -15,18 +16,31 @@ export interface V1ConfigResult {
   provider?: Record<string, any>
   tools?: Record<string, boolean>
   permission?: Record<string, unknown>
+  formatter?: unknown
 }
 
 /**
- * Parses a model string into providerID and model id.
- * e.g. "kiro-proxy/claude-opus-5.5-thinking" -> { providerID: "kiro-proxy", id: "claude-opus-5.5-thinking" }
- * e.g. "claude-sonnet-4-5" -> { providerID: "anthropic", id: "claude-sonnet-4-5" }
+ * Parses a model string into the `{ providerID, id }` reference V2 stores on an agent.
+ *
+ * The split mirrors V2's own `Model.Ref.parse`, which cuts at the first `/`, rather than OMO's
+ * config-level parser, which also strips reasoning suffixes. A model id reaching this point is
+ * already resolved, so stripping a suffix such as `-thinking` here would rename the model.
+ *
+ * A string with no provider cannot be parsed on its own. `resolveBareProvider` is given the chance
+ * to answer from the live catalog; when it cannot, the result is undefined so the caller can skip
+ * the model rather than route to a fabricated provider.
  */
-export function parseModelString(modelStr: string, variant?: string): {
-  providerID: string
-  id: string
-  variant?: string
-} {
+export function parseModelString(
+  modelStr: string,
+  variant?: string,
+  resolveBareProvider?: (modelID: string) => string | undefined,
+):
+  | {
+      providerID: string
+      id: string
+      variant?: string
+    }
+  | undefined {
   const slashIdx = modelStr.indexOf("/")
   if (slashIdx !== -1) {
     return {
@@ -35,8 +49,12 @@ export function parseModelString(modelStr: string, variant?: string): {
       ...(variant ? { variant } : {}),
     }
   }
+
+  const resolvedProvider = resolveBareProvider?.(modelStr)
+  if (!resolvedProvider) return undefined
+
   return {
-    providerID: "anthropic",
+    providerID: resolvedProvider,
     id: modelStr,
     ...(variant ? { variant } : {}),
   }
@@ -65,8 +83,9 @@ export async function bindConfigToV2(args: {
   v2Context: Context
   v1Config: V1ConfigResult
   rawPluginConfig?: any
+  providerModels?: readonly V2ModelInfoLike[]
 }): Promise<Array<() => Promise<void>>> {
-  const { v2Context, v1Config, rawPluginConfig } = args
+  const { v2Context, v1Config, rawPluginConfig, providerModels } = args
   const disposers: Array<() => Promise<void>> = []
 
   const globalPermissionRules = dedupePermissionRules([
@@ -74,6 +93,9 @@ export async function bindConfigToV2(args: {
     ...toV2PermissionRules(v1Config.permission),
   ])
   const permissionProjector = createV2PermissionProjector({ globalRules: globalPermissionRules })
+
+  const resolveBareProvider = (modelID: string): string | undefined =>
+    providerModels ? resolveProviderForBareModel(modelID, providerModels) : undefined
 
   if (globalPermissionRules.length > 0) {
     log("[v2-bridge:config] projecting global tool permissions onto the V2 ruleset:", {
@@ -139,7 +161,17 @@ export async function bindConfigToV2(args: {
               // 2. Model & Reasoning / Variant
               if (agentConfig.model && typeof agentConfig.model === "string") {
                 const variant = agentConfig.variant ?? agentConfig.reasoning
-                agent.model = parseModelString(agentConfig.model, variant) as any
+                const parsedModel = parseModelString(agentConfig.model, variant, resolveBareProvider)
+                if (parsedModel) {
+                  agent.model = parsedModel as any
+                } else {
+                  // A bare id no live provider claims cannot be routed: skipping leaves the host's
+                  // resolved model, where a fabricated provider would never serve the request.
+                  log("[v2-bridge:config] skipping unresolvable bare model id:", {
+                    id,
+                    model: agentConfig.model,
+                  })
+                }
               } else if (agentConfig.model && typeof agentConfig.model === "object") {
                 agent.model = agentConfig.model
               }

@@ -8,6 +8,7 @@ import { bindToolsToV2 } from "./tool-adapter"
 import { bindSessionHooksToV2 } from "./session-adapter"
 import { bindMcpToV2 } from "./mcp-adapter"
 import { bindConfigToV2 } from "./config-adapter"
+import { readV2ProviderCatalog, summarizeV1ProviderConfig, toV1ProviderConfig, type V2ModelInfoLike } from "./provider-adapter"
 
 export type BridgeCleanup = () => Promise<void>
 
@@ -68,8 +69,23 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
 
   // 4. Execute V1 Config Pipeline and bind to V2 (agent, command, provider)
   const v1Config: Record<string, unknown> = {}
+  let providerModels: readonly V2ModelInfoLike[] | undefined
   if (typeof v1Hooks.config === "function") {
     try {
+      // Phase 1 reads `config.provider` to build the context-limit cache, the image-capable model
+      // set, and the Anthropic 1M flag. Nothing else in the pipeline writes it, so on V2 this seed
+      // is the only input phase 1 ever sees.
+      const catalog = await readV2ProviderCatalog(v2Context)
+      if (catalog) {
+        const seededProviderConfig = toV1ProviderConfig(catalog)
+        v1Config.provider = seededProviderConfig
+        providerModels = catalog.models
+        log(
+          "[v2-bridge:provider] seeded V1 provider config from the V2 catalog",
+          summarizeV1ProviderConfig(seededProviderConfig),
+        )
+      }
+
       log("[v2-bridge] executing OMO V1 config pipeline for directory", { directory })
       await v1Hooks.config(v1Config)
       const rawPluginConfig = loadPluginConfig(directory, {})
@@ -78,6 +94,7 @@ export async function setupOpenCodeV2Bridge(v2Context: Context): Promise<BridgeC
         v2Context,
         v1Config,
         rawPluginConfig,
+        providerModels,
       })
       allDisposers.push(...configDisposers)
     } catch (err) {
