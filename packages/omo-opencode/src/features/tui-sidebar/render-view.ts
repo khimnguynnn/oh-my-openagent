@@ -4,7 +4,7 @@ import type { ViewNode } from "./element-helpers"
 import { assertNever } from "./state-types"
 import type { AgentsState, ConfigBanner, JobBoardState, LoopState, RosterState, SidebarView } from "./state-types"
 
-type ThemeLike = {
+export type ThemeLike = {
   readonly error?: unknown
   readonly text?: unknown
   readonly textMuted?: unknown
