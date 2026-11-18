@@ -42,6 +42,29 @@ Two consequences worth knowing:
 If either listing call fails, the bridge leaves the provider map unset and the caches stay empty,
 which is the pre-seeding behavior rather than a load failure.
 
+## Agent order is relative, not absolute
+
+V2's `Agent.Info` has no `order` field (the schema strips unknown keys), and `Agent.list` does not
+sort at all:
+
+```js
+list = () => { let T = Ei(_.agents.values()), y = active(_)
+               return y ? [y, ...T.filter((E) => E.id !== y.id)] : T }
+```
+
+The list is `Map` insertion order with the active agent hoisted to index 0. That makes insertion
+order the only ordering lever a plugin has, and `editor.update` cannot move an id already in the Map,
+so a plugin can guarantee the *relative* order of the agents it registers but not their absolute
+position: V2 registers its built-ins first, and they keep the leading slots.
+
+`installAgentSortShim()` is therefore inert on V2. It exists because OpenCode 1.4.x sorted agents by
+name, and V2 does not sort, so the shim's `Array.prototype` patch never activates. It stays installed
+for V1 and does no harm; it is not something to fix if agent order looks off.
+
+Consequence: OMO's core agents (`sisyphus -> hephaestus -> prometheus -> atlas`) are written in that
+order and are contiguous, but they sit after the host's built-ins. Writing an `order` field, or
+biasing names with invisible characters, does not work and is forbidden.
+
 ## Session todos
 
 `session.todo` returns `[]`. V2 has no session-todo API, so there is nothing to read.

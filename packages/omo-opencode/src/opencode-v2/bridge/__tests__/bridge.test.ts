@@ -767,6 +767,162 @@ describe("OpenCode V2 Compatibility Bridge", () => {
       }
     })
 
+    it("sets each agent's display name even though V2 pre-fills name with the id", async () => {
+      // given a V1 config whose agents carry no explicit name, against an editor that pre-fills
+      // `name` with the id exactly as V2 does
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          agent: {
+            sisyphus: { model: "kiro-proxy/claude-opus-5" },
+            prometheus: { model: "kiro-proxy/claude-opus-5" },
+          },
+        },
+      })
+
+      // then the display name replaces the id, and the id itself is untouched
+      expect(updatedAgents.get("sisyphus")?.name).toBe("Sisyphus - ultraworker")
+      expect(updatedAgents.get("sisyphus")?.id).toBe("sisyphus")
+      expect(updatedAgents.get("prometheus")?.name).toBe("Prometheus - Plan Builder")
+    })
+
+    it("keeps an explicit agent name from the V1 config", async () => {
+      // given an agent config that names itself
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: { agent: { oracle: { name: "Custom Oracle", prompt: "p" } } },
+      })
+
+      // then the explicit name wins over the display-name table
+      expect(updatedAgents.get("oracle")?.name).toBe("Custom Oracle")
+    })
+
+    it("registers the core agents in canonical order so V2's insertion order reflects it", async () => {
+      // given agents supplied in a deliberately non-canonical order
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          agent: {
+            atlas: { prompt: "p" },
+            oracle: { prompt: "p" },
+            prometheus: { prompt: "p" },
+            sisyphus: { prompt: "p" },
+            hephaestus: { prompt: "p" },
+          },
+        },
+      })
+
+      // then the core four are written first, in canonical order, with non-core agents after
+      expect([...updatedAgents.keys()]).toEqual(["sisyphus", "hephaestus", "prometheus", "atlas", "oracle"])
+    })
+
+    it("honors a user agent_order override when registering agents", async () => {
+      // given an agent_order that inverts the default core order
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          agent: {
+            atlas: { prompt: "p" },
+            prometheus: { prompt: "p" },
+            sisyphus: { prompt: "p" },
+            hephaestus: { prompt: "p" },
+          },
+        },
+        rawPluginConfig: { agent_order: ["hephaestus", "sisyphus", "prometheus", "atlas"] },
+      })
+
+      // then the configured order wins
+      expect([...updatedAgents.keys()]).toEqual(["hephaestus", "sisyphus", "prometheus", "atlas"])
+    })
+
+    it("accepts display names inside agent_order and still orders canonically", async () => {
+      // given an agent_order written with display names, as legacy configs carry them
+      const { context, updatedAgents } = createMockV2Context()
+
+      // when
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          agent: {
+            atlas: { prompt: "p" },
+            prometheus: { prompt: "p" },
+            sisyphus: { prompt: "p" },
+            hephaestus: { prompt: "p" },
+          },
+        },
+        rawPluginConfig: {
+          agent_order: ["Atlas - Plan Executor", "Prometheus - Plan Builder", "Sisyphus - ultraworker", "Hephaestus - Deep Agent"],
+        },
+      })
+
+      // then the display names normalize to config keys before ordering
+      expect([...updatedAgents.keys()]).toEqual(["atlas", "prometheus", "sisyphus", "hephaestus"])
+    })
+
+    it("normalizes a display name in a command's agent field before switching the session agent", async () => {
+      // given a command targeting a display name, as V1 configs carry them
+      const { context, registeredCommands } = createMockV2Context()
+      const switched: Array<string> = []
+      ;(context.session as any).switchAgent = async ({ agent }: { agent: string }) => {
+        switched.push(agent)
+      }
+
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: {
+          command: {
+            plan: { template: "do it", agent: "Prometheus - Plan Builder" },
+          },
+        },
+      })
+
+      // when the command runs
+      await registeredCommands.get("plan").execute({ sessionID: "s1", prompt: { text: "" } })
+
+      // then V2 receives the canonical agent id, not the display name
+      expect(switched).toEqual(["prometheus"])
+    })
+
+    it("leaves a host built-in's capitalized name alone when it has no display-name entry", async () => {
+      // given a V2 editor whose built-in agents already carry capitalized names
+      const { context, updatedAgents } = createMockV2Context()
+      ;(context.agent as any).transform = async (cb: any) => {
+        cb({
+          list: () => [],
+          get: () => undefined,
+          default: () => {},
+          remove: () => {},
+          update: (_id: string, fn: any) => {
+            const agent: any = { id: "build", name: "Build" }
+            fn(agent)
+            updatedAgents.set("build", agent)
+          },
+        })
+        return { dispose: async () => {} }
+      }
+
+      // when a V1 config also mentions that agent (its key has no display-name entry)
+      await bindConfigToV2({
+        v2Context: context,
+        v1Config: { agent: { build: { prompt: "p" } } },
+      })
+
+      // then the host's capitalized name survives
+      expect(updatedAgents.get("build")?.name).toBe("Build")
+    })
+
     it("projects OMO tool permissions onto the V2 agent ruleset", async () => {
       // given a V1 config carrying phase 4 output: global tool flags, global permission, and
       // per-agent permission maps
