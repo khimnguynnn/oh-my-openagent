@@ -2,13 +2,19 @@ import {
   ACTIVITY_FRAMES,
   AGENT_COLOR_TOKENS,
   AGENT_MODEL_MAX,
+  AGENT_ROW_CHROME,
   LABEL_MAX,
+  SECTION_CHROME,
+  SESSION_ID_MAX,
+  SIDEBAR_WIDTH_FALLBACK,
   STATUS_DOT_GLYPH,
   STATUS_HISTORY_GLYPH,
   STATUS_STOPPED_GLYPH,
 } from "./constants"
 import { box, text } from "./element-helpers"
 import type { ViewNode } from "./element-helpers"
+import { groupAgents, groupBusy, leadSession } from "./group-agents"
+import type { AgentGroup } from "./group-agents"
 import { assertNever } from "./state-types"
 import type {
   AgentRow,
@@ -19,6 +25,10 @@ import type {
   RosterState,
   SidebarView,
 } from "./state-types"
+
+const LABEL_MIN = 6
+const GROUP_REF_PREFIX = "group:"
+const AGENT_REF_PREFIX = "agent:"
 
 export type ThemeLike = {
   readonly error?: unknown
@@ -32,8 +42,14 @@ export type ThemeLike = {
 }
 
 export type ViewNodeOptions = {
-  /** Click handler for an agent row. Absent leaves rows unclickable rather than a dead click. */
+  /** Click handler for a session row. Absent leaves rows unclickable rather than a dead click. */
   readonly onSelectAgent?: (sessionID: string) => void
+  /** Click handler for a group row, which folds that agent's sessions open or shut. */
+  readonly onToggleAgent?: (name: string) => void
+  /** Agent names whose sessions are currently shown. */
+  readonly expandedAgents?: readonly string[]
+  /** Measured column width of the sidebar box, so detail text fits instead of wrapping. */
+  readonly width?: number
 }
 
 export function buildViewNodes(
@@ -145,22 +161,71 @@ function agentNodes(agents: AgentsState, theme: ThemeLike, options: ViewNodeOpti
   switch (agents.kind) {
     case "none":
       return []
-    case "list":
-      return [section("Agents", theme, agents.agents.map((agent) => agentRowNode(agent, theme, options)))]
+    case "list": {
+      if (agents.agents.length === 0) return []
+      const groups = groupAgents(agents.agents)
+      const nodes: ViewNode[] = []
+      for (const group of groups) {
+        nodes.push(agentGroupNode(group, theme, options))
+        if (!isExpanded(group.name, options)) continue
+        for (const session of group.sessions) nodes.push(agentSessionNode(session, theme, options))
+      }
+      return [section("Agents", theme, nodes)]
+    }
     default:
       return assertNever(agents)
   }
 }
 
-function agentRowNode(agent: AgentRow, theme: ThemeLike, options: ViewNodeOptions): ViewNode {
-  const props: Record<string, unknown> = { fg: agentColor(agent, theme) }
-  const sessionID = agent.sessionID
+function isExpanded(name: string, options: ViewNodeOptions): boolean {
+  const expanded = options.expandedAgents
+  return expanded !== undefined && expanded.includes(name)
+}
+
+function agentGroupNode(group: AgentGroup, theme: ThemeLike, options: ViewNodeOptions): ViewNode {
+  const lead = leadSession(group)
+  const glyph = lead === undefined ? STATUS_DOT_GLYPH : agentGlyph(lead, 0, groupBusy(group))
+  const props: Record<string, unknown> = { fg: lead === undefined ? theme.text : agentColor(lead, theme) }
+  const toggle = options.onToggleAgent
+  if (toggle !== undefined && group.sessions.length > 1) {
+    props.onMouseDown = () => toggle(group.name)
+  }
+  const ref = { ref: `${GROUP_REF_PREFIX}${group.name}` }
+  return text(props, agentGroupLine(group, glyph, detailWidth(options)), ref)
+}
+
+function agentSessionNode(session: AgentRow, theme: ThemeLike, options: ViewNodeOptions): ViewNode {
+  const props: Record<string, unknown> = { fg: theme.textMuted }
+  const sessionID = session.sessionID
   if (sessionID !== undefined && options.onSelectAgent !== undefined) {
     const select = options.onSelectAgent
     props.onMouseDown = () => select(sessionID)
   }
-  const ref = sessionID === undefined ? {} : { ref: `agent:${sessionID}` }
-  return text(props, agentLine(agent, agentGlyph(agent)), ref)
+  const ref = sessionID === undefined ? {} : { ref: `${AGENT_REF_PREFIX}${sessionID}` }
+  return text(props, agentSessionLine(session, detailWidth(options)), ref)
+}
+
+function detailWidth(options: ViewNodeOptions): number {
+  const measured = options.width ?? SIDEBAR_WIDTH_FALLBACK
+  return Math.max(LABEL_MIN, measured - SECTION_CHROME)
+}
+
+export function agentGroupLine(group: AgentGroup, glyph: string, width: number): string {
+  const count = group.sessions.length > 1 ? ` ·${group.sessions.length}` : ""
+  const name = truncateTo(group.name, Math.max(LABEL_MIN, width - AGENT_ROW_CHROME - count.length))
+  return `${glyph} ${name}${count}`
+}
+
+export function agentSessionLine(session: AgentRow, width: number): string {
+  const id = session.sessionID === undefined ? "" : truncateTo(shortSessionID(session.sessionID), SESSION_ID_MAX)
+  const titleBudget = Math.max(LABEL_MIN, width - AGENT_ROW_CHROME - id.length)
+  const detail = session.title === undefined ? session.status : session.title
+  const label = id === "" ? `  ${truncateTo(detail, titleBudget)}` : `  ${id} ${truncateTo(detail, titleBudget)}`
+  return label
+}
+
+function shortSessionID(sessionID: string): string {
+  return sessionID.startsWith("ses_") ? sessionID.slice(4) : sessionID
 }
 
 export function agentLine(agent: AgentRow, glyph: string): string {
@@ -175,8 +240,8 @@ function modelLabel(model: string, variant: string | undefined): string {
   return label.length <= AGENT_MODEL_MAX ? label : `${label.slice(0, AGENT_MODEL_MAX - 3)}...`
 }
 
-export function agentGlyph(agent: AgentRow, frameIndex = 0): string {
-  if (isAgentActive(agent.status)) return ACTIVITY_FRAMES[frameIndex % ACTIVITY_FRAMES.length] ?? ACTIVITY_FRAMES[0]!
+export function agentGlyph(agent: AgentRow, frameIndex = 0, busy = isAgentActive(agent.status)): string {
+  if (busy) return ACTIVITY_FRAMES[frameIndex % ACTIVITY_FRAMES.length] ?? ACTIVITY_FRAMES[0]!
   if (agent.outcome !== undefined) return STATUS_STOPPED_GLYPH
   return agent.activeSince === undefined ? STATUS_DOT_GLYPH : STATUS_HISTORY_GLYPH
 }
@@ -201,7 +266,12 @@ function agentLines(agents: AgentsState): string[] {
     case "none":
       return []
     case "list":
-      return ["Agents", ...agents.agents.map((agent) => `${agent.name} ${agent.status}`)]
+      return [
+        "Agents",
+        ...groupAgents(agents.agents).map((group) =>
+          agentGroupLine(group, agentGlyph(leadSession(group), 0, groupBusy(group)), LABEL_MAX),
+        ),
+      ]
     default:
       return assertNever(agents)
   }
@@ -281,7 +351,12 @@ function section(title: string, theme: ThemeLike, children: readonly ViewNode[])
 }
 
 function truncate(value: string): string {
-  return value.length <= LABEL_MAX ? value : `${value.slice(0, LABEL_MAX - 3)}...`
+  return truncateTo(value, LABEL_MAX)
+}
+
+function truncateTo(value: string, max: number): string {
+  if (max <= 3) return value.slice(0, Math.max(0, max))
+  return value.length <= max ? value : `${value.slice(0, max - 3)}...`
 }
 
 function activeGoalLabel(activeGoal: string | null): string {
