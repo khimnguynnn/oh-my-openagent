@@ -2,23 +2,17 @@ import type { TuiPluginModule } from "@opencode-ai/plugin/tui"
 
 import { registerBtwSideTui } from "./features/btw-side"
 import { registerNativeEditionNudgeTui } from "./features/native-edition-nudge"
-import { computeView, viewKey } from "./features/tui-sidebar/compute-view"
+import { viewKey } from "./features/tui-sidebar/compute-view"
 import { POLL_INTERVAL_MS } from "./features/tui-sidebar/constants"
-import { deriveAgents, deriveConfig, deriveJobBoard, deriveLoop, deriveRoster } from "./features/tui-sidebar/derivers"
-import type { ViewNode } from "./features/tui-sidebar/element-helpers"
-import { readMirror } from "./features/tui-sidebar/mirror-io"
+import { materialize } from "./features/tui-sidebar/materialize"
+import { loadPluginValidation, readView } from "./features/tui-sidebar/read-view"
 import { buildViewNodes } from "./features/tui-sidebar/render-view"
-import type { RosterRow } from "./features/tui-sidebar/state-types"
-import type { SidebarView } from "./features/tui-sidebar/state-types"
 import { opencodeV2Tui } from "./opencode-v2/tui-entry"
 import { log } from "./shared/logger"
 import { trackLoadedPluginSandbox } from "./hooks/auto-update-checker/checker/sandbox-refresh"
 
-type SolidRuntime<Node> = {
-  readonly createElement: (tag: string) => Node
-  readonly insert: (parent: Node, child: Node | string) => unknown
-  readonly setProp: (node: Node, name: string, value: unknown) => unknown
-}
+export { materialize } from "./features/tui-sidebar/materialize"
+export { readView } from "./features/tui-sidebar/read-view"
 
 type SidebarSlotRegistration<Node> = {
   readonly order: number
@@ -45,66 +39,6 @@ export function registerSidebarContentSlot<Node>({
     },
   })
   requestRender()
-}
-
-function materialize<Node>(nodes: readonly ViewNode[], solid: SolidRuntime<Node>): Node {
-  const root = solid.createElement("box")
-  solid.setProp(root, "flexDirection", "column")
-  for (const node of nodes) {
-    solid.insert(root, materializeNode(node, solid))
-  }
-  return root
-}
-
-function materializeNode<Node>(node: ViewNode, solid: SolidRuntime<Node>): Node {
-  const element = solid.createElement(node.kind)
-  for (const [name, value] of Object.entries(node.props)) {
-    solid.setProp(element, name, value)
-  }
-  if (node.kind === "text") {
-    solid.insert(element, node.text ?? "")
-  }
-  for (const child of node.children ?? []) {
-    solid.insert(element, materializeNode(child, solid))
-  }
-  return element
-}
-
-type RosterResolver = (directory: string) => RosterRow[]
-type PluginValidation = {
-  readonly valid: boolean
-  readonly messages: readonly string[]
-  readonly config: {
-    readonly tui?: {
-      readonly sidebar?: {
-        readonly enabled?: boolean
-      }
-    }
-  }
-}
-
-async function loadPluginValidation(directory: string): Promise<PluginValidation> {
-  const { validatePluginConfig } = await import("./config/validate")
-  return validatePluginConfig(directory)
-}
-
-async function loadRosterRows(directory: string): Promise<readonly RosterRow[]> {
-  const { resolveRoster } = await import("./features/tui-sidebar/roster-resolver")
-  const resolver: RosterResolver = resolveRoster
-  return resolver(directory)
-}
-
-async function readView(directory: string): Promise<SidebarView> {
-  const validation = await loadPluginValidation(directory)
-  const mirror = readMirror(directory)
-  const roster = await loadRosterRows(directory)
-  return computeView({
-    config: deriveConfig(validation),
-    roster: deriveRoster(roster),
-    agents: deriveAgents(mirror),
-    jobs: deriveJobBoard(mirror),
-    loop: deriveLoop(mirror),
-  })
 }
 
 export function handleTuiPollError(
